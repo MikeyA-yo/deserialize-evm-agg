@@ -54,7 +54,7 @@
     "log:all": "npx pm2 logs evm-server && npx pm2 logs 0g-pool-indexer && npx pm2 logs base-pool-indexer",
     "log:all:tail": "npx pm2 logs evm-server --raw",
     "clean": "rm -rf packages/*/dist apps/*/dist providers/*/dist",
-    "clean:build": "yarn run clean && yarn run build",
+    "clean:build": "npm run clean && npm run build",
     "ch": "git pull && yarn run build && yarn run restart:all",
     "chl": "yarn run ch && yarn run log:all",
     "dev:all": "concurrently \"yarn run dev:start:server\""
