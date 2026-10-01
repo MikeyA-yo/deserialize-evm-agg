@@ -53,7 +53,7 @@
     "log:base-index": "npx pm2 logs base-pool-indexer",
     "log:all": "npx pm2 logs evm-server && npx pm2 logs 0g-pool-indexer && npx pm2 logs base-pool-indexer",
     "log:all:tail": "npx pm2 logs evm-server --raw",
-    "clean": "rm -rf packages/*/dist apps/*/dist",
+    "clean": "rm -rf packages/*/dist apps/*/dist providers/*/dist",
     "clean:build": "yarn run clean && yarn run build",
     "ch": "git pull && yarn run build && yarn run restart:all",
     "chl": "yarn run ch && yarn run log:all",
