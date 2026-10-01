@@ -1,4 +1,4 @@
-import { ChainConfig } from "UniswapV3Calculator";
+import { ChainConfig } from "../UniswapV3Calculator";
 
 export const chain: ChainConfig = {
     name: "0G MAINNET",

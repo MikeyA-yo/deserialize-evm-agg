@@ -1,4 +1,5 @@
-import { NetworkType } from "./constants"
+export * from "./constants";
+import { NetworkType } from "./constants";
 
 
 export * from "./0g"
@@ -7,13 +8,28 @@ export * from "./IRoute"
 export * from "./UniswapV3Calculator"
 export * from "./type"
 export * from "./utils"
+export * from "./AllContructor"
 
 import { AllRoute0G, DEX_IDS_0G, dexIdList0G, DexIdTypes0G, OgChain } from "./0g"
 import { AllRouteBase, dexIdListBase, DEX_IDS_BASE, DexIdTypesBase, BaseChain } from "./base"
 
 
+const SUPPORTED_NETWORKS: Record<string, NetworkType> = {
+    "0G": "0G",
+    BASE: "BASE",
+};
+
+export const normalizeNetworkType = (chainName?: string | null): NetworkType => {
+    const normalized = (chainName ?? "").trim().toUpperCase();
+    const match = SUPPORTED_NETWORKS[normalized];
+    if (!match) {
+        throw new Error(`Unsupported chain: ${chainName}`);
+    }
+    return match;
+};
+
 export const getChainAllRoute = (chainName: NetworkType) => {
-    switch (chainName) {
+    switch (normalizeNetworkType(chainName)) {
         case "0G":
             return AllRoute0G
         case "BASE":
@@ -24,7 +40,7 @@ export const getChainAllRoute = (chainName: NetworkType) => {
 }
 
 export const getChainDexIdList = (chainName: NetworkType) => {
-    switch (chainName) {
+    switch (normalizeNetworkType(chainName)) {
         case "0G":
             return dexIdList0G
         case "BASE":
@@ -38,7 +54,7 @@ export const getChainDexIdList = (chainName: NetworkType) => {
 
 
 export const getChainDexIds = (chainName: NetworkType) => {
-    switch (chainName) {
+    switch (normalizeNetworkType(chainName)) {
         case "0G":
             return DEX_IDS_0G;
         case "BASE":
@@ -49,7 +65,7 @@ export const getChainDexIds = (chainName: NetworkType) => {
 }
 
 export const getChainFromName = (chainName: NetworkType) => {
-    switch (chainName) {
+    switch (normalizeNetworkType(chainName)) {
         case "0G":
             return OgChain;
         case "BASE":

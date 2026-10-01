@@ -5,7 +5,7 @@
  * Aerodrome V3 uses Uniswap V3's core logic with some modifications
  */
 
-import { UniswapV3QuoteCalculator, DexConfig, ChainConfig, PoolCreatedEvent, PoolInfo, PoolData } from "./UniswapV3Calculator";
+import { UniswapV3QuoteCalculator, DexConfig, ChainConfig, PoolCreatedEvent, PoolInfo, PoolData, createJsonRpcProvider } from "./UniswapV3Calculator";
 import { Contract, JsonRpcProvider } from "ethers";
 import { NetworkType } from "./constants";
 import Decimal from "decimal.js";
@@ -206,7 +206,7 @@ export class AerodromeV3QuoteCalculator extends UniswapV3QuoteCalculator {
         tickSpacings: number[] = AERODROME_TICK_SPACINGS
     ) {
         // Use provided provider or create a new one
-        const rpcProvider = provider || new JsonRpcProvider(chainConfig.rpcUrl);
+        const rpcProvider = provider || createJsonRpcProvider(chainConfig.rpcUrl, chainConfig.chainId);
 
         super(config, chainConfig, rpcProvider);
         this.tickSpacings = tickSpacings;
@@ -289,54 +289,41 @@ export class AerodromeV3QuoteCalculator extends UniswapV3QuoteCalculator {
             tokenB = this.config.wrappedNativeTokenAddress;
         }
         if (tokenA.toLowerCase() === tokenB.toLowerCase()) {
-            throw new Error("TokenA and TokenB cannot be the same");
+            return [];
         }
 
-        const foundPools = await Promise.all(
-            feeTiers.map(async (fee) => {
-                try {
-                    const poolAddress: string = await factory.getPool(tokenA, tokenB, fee);
+        const foundPools: (PoolInfo & { poolData: PoolData })[] = [];
+        for (const fee of feeTiers) {
+            try {
+                const poolAddress: string = await this.retryWithBackoff(() => factory.getPool(tokenA, tokenB, fee));
 
-                    // 🧠 Early skip for zero address
-                    if (
-                        !poolAddress ||
-                        poolAddress.toLowerCase() === "0x0000000000000000000000000000000000000000"
-                    ) {
-                        return null;
-                    }
-
-                    const pool = new Contract(poolAddress, AERODROME_V3_POOL_ABI, this.provider);
-
-                    // ⚠️ If this throws for non-existent pools, it'll be caught below
-                    const liquidityRaw = await pool.liquidity();
-                    const liquidity = new Decimal(liquidityRaw.toString());
-
-
-
-                    if (liquidity.lte(0)) return null;
-
-                    // only now fetch poolData since it's a heavier call
-                    const poolData = await this.getPoolData(poolAddress);
-
-                    const res = {
-                        pool,
-                        fee,
-                        liquidity,
-                        address: poolAddress,
-                        poolData,
-                    };
-
-
-                    return res;
-                } catch (error) {
-                    console.warn(`Error checking pool for fee ${fee} on DEX {${this.config.name}}`);
-                    return null;
+                if (
+                    !poolAddress ||
+                    poolAddress.toLowerCase() === "0x0000000000000000000000000000000000000000"
+                ) {
+                    continue;
                 }
-            })
-        );
 
-        const clean = foundPools.filter((p): p is PoolInfo & { poolData: PoolData } => p !== null);
-        return clean;
+                const pool = new Contract(poolAddress, AERODROME_V3_POOL_ABI, this.provider);
+                const liquidityRaw = await this.retryWithBackoff(() => pool.liquidity());
+                const liquidity = new Decimal(liquidityRaw.toString());
+
+                if (liquidity.lte(0)) continue;
+
+                const poolData = await this.getPoolData(poolAddress);
+                foundPools.push({
+                    pool,
+                    fee,
+                    liquidity,
+                    address: poolAddress,
+                    poolData,
+                });
+            } catch (error) {
+                console.warn(`Error checking pool for fee ${fee} on DEX {${this.config.name}}`, error);
+            }
+        }
+
+        return foundPools;
     }
 
     getAllPoolsFromEvents = async (
@@ -345,40 +332,7 @@ export class AerodromeV3QuoteCalculator extends UniswapV3QuoteCalculator {
         fromBlockHeight: string = this.config.fromBlock || "0",
         abi: any
     ) => {
-        console.log("getting all the pools for chain: ", this.config.network, "rpc: ", this.chainConfig.rpcUrl, " provider rpc", provider._getConnection().url);
-        const factory = new Contract(factoryAddress, abi, provider);
-
-        const latestBlock = await provider.getBlockNumber();
-
-        // Create filter for PoolCreated events
-        // Event signature: PoolCreated(address,address,uint24,int24,int24,address)
-        const filter = factory.filters.PoolCreated();
-
-        // Get all PoolCreated events from the specified block range
-        const events = await factory.queryFilter(
-            filter,
-            parseInt(fromBlockHeight),
-            latestBlock
-        );
-
-        console.log('these are all the events fetched: ', events.length);
-
-        // Map events to a more convenient format
-        const pools: PoolCreatedEvent[] = events.map((event: any) => ({
-            token0: event.args.token0,
-            token1: event.args.token1,
-            fee: event.args.tickSpacing.toString(),
-            poolAddress: event.args.pool,
-            blockNumber: event.blockNumber.toString(),
-        }));
-
-        // const dataToWrite = {
-        //     pools: pools,
-        //     lastBlockNumber: pools[pools.length - 1].blockNumber,
-        // }
-
-
-        return pools;
+        return super.getAllPoolsFromEvents(factoryAddress, provider, fromBlockHeight, abi);
     }
 
 
@@ -412,20 +366,21 @@ export class AerodromeV3QuoteCalculator extends UniswapV3QuoteCalculator {
             console.log('poolTickSpacing: ', poolTickSpacing);
 
 
-            const result = await client.readContract({
+            const result = await this.retryWithBackoff(() => client.readContract({
                 address: config.quoterAddress as Address,
                 abi: AERODROME_V3_QUOTER_ABI,
                 functionName: 'quoteExactInputSingle',
                 args: [{
                     tokenIn: tokenIn as Address,
                     tokenOut: tokenOut as Address,
-                    amountIn: BigInt(amountIn),
-                    tickSpacing: poolTickSpacing,
-                    sqrtPriceLimitX96: BigInt(sqrtPriceLimitX96),
+                    amountIn: BigInt(new Decimal(amountIn).toFixed(0)),
+                    tickSpacing: Number(poolTickSpacing),
+                    sqrtPriceLimitX96: BigInt(new Decimal(sqrtPriceLimitX96 || "0").toFixed(0)),
                 }],
-            });
+            }));
 
-            return { amountOut: result[0], pool }; // amountOut
+            const amountOut = (result as readonly [bigint])[0].toString();
+            return { amountOut, pool };
         } catch (error) {
             console.error("Aerodrome quote simulation failed:", error);
             return { amountOut: "0", pool };

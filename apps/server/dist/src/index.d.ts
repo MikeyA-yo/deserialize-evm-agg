@@ -1,7 +1,7 @@
 import { DexCache } from "@deserialize-evm-agg/cache";
 import { DeserializeRoutePlan, IRoute, AllDexIdTypes } from "@deserialize-evm-agg/routes-providers";
 import { JsonRpcProvider } from "ethers";
-import { NetworkType } from "@deserialize-evm-agg/routes-providers/dist/constants";
+import { NetworkType } from "@deserialize-evm-agg/routes-providers";
 export interface RouteOptions {
     targetRouteNumber: number;
 }

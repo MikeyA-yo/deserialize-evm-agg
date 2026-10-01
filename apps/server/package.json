@@ -4,7 +4,7 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
-    "build": "sudo rm -r dist ;  tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@deserialize-evm-agg/cache": "1.0.0",

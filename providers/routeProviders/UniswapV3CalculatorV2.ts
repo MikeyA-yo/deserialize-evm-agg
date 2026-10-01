@@ -60,12 +60,10 @@ export class UniswapV3QuoteCalculatorV2 extends UniswapV3QuoteCalculator {
         try {
 
 
-            // Convert amountIn to bigint
             const amountInBN = BigInt(new Decimal(amountIn).toFixed(0));
-            const sqrtPriceLimitBN = BigInt(sqrtPriceLimitX96 || "0");
+            const sqrtPriceLimitBN = BigInt(new Decimal(sqrtPriceLimitX96 || "0").toFixed(0));
 
-            // Call the quoter contract
-            const result = await client.readContract({
+            const result = await this.retryWithBackoff(() => client.readContract({
                 address: config.quoterAddress as Address,
                 abi: UNISWAP_V3_QUOTER_V2_ABI,
                 functionName: 'quoteExactInputSingle',
@@ -76,11 +74,11 @@ export class UniswapV3QuoteCalculatorV2 extends UniswapV3QuoteCalculator {
                     fee: fee,
                     sqrtPriceLimitX96: sqrtPriceLimitBN,
                 }],
-            });
+            }));
 
             console.log('result: ', result);
-            // result is a tuple: [amountOut, sqrtPriceX96After, initializedTicksCrossed, gasEstimate]
-            return { amountOut: result[0], pool };
+            const amountOut = (result as readonly [bigint])[0].toString();
+            return { amountOut, pool };
 
         } catch (error) {
             console.error("UniswapV3 QuoterV2 simulation failed:", error);

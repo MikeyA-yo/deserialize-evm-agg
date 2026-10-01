@@ -1,7 +1,7 @@
 import { ArrayBiMap, Edge, EdgeData, FunctionToMutateTheEdgeCostType, Graph, TokenBiMap } from "@deserialize-evm-agg/graph";
 import { Decimal } from "decimal.js";
 import { JsonRpcProvider, TransactionRequest } from "ethers";
-import { ChainConfig, DexConfig } from "UniswapV3Calculator";
+import { ChainConfig, DexConfig } from "./UniswapV3Calculator";
 export interface DeserializeRoutePlan<DexIdTypes> {
     tokenA: string;
     tokenB: string;

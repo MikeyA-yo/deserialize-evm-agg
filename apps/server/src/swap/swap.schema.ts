@@ -8,10 +8,11 @@ export const SwapQuoteRequestSchema = z.object({
     body: z.object({
         tokenA: z.string(),
         tokenB: z.string(),
-        amountIn: z.string().transform((arg) => {
-            return parseFloat(arg);
+        amountIn: z.union([z.string(), z.number()]).transform((arg) => {
+            return typeof arg === "number" ? arg : parseFloat(arg);
         }),
         dexId: z.string(),
+        chain: z.string().optional(),
         options: z
             .object({
                 targetRouteNumber: z.number(),
@@ -19,7 +20,7 @@ export const SwapQuoteRequestSchema = z.object({
             .optional(),
     }),
     params: z.object({
-        chain: z.string().default("0G"),
+        chain: z.string().optional(),
     }).optional(),
 });
 
@@ -29,20 +30,21 @@ export type SwapQuoteRequestType = z.infer<typeof SwapQuoteRequestSchema>["body"
 export const SwapRequestSchema = z.object({
     body: z.object({
         publicKey: z.string(),
+        chain: z.string().optional(),
         quote: z.object({
             tokenA: z.string(),
             tokenB: z.string(),
-            amountIn: z.string().transform((arg) => {
-                return parseFloat(arg);
+            amountIn: z.union([z.string(), z.number()]).transform((arg) => {
+                return typeof arg === "number" ? arg : parseFloat(arg);
             }),
-            amountOut: z.string().transform((arg) => {
-                return parseFloat(arg);
+            amountOut: z.union([z.string(), z.number()]).transform((arg) => {
+                return typeof arg === "number" ? arg : parseFloat(arg);
             }),
-            tokenPrice: z.string().transform((arg) => {
-                return parseFloat(arg);
+            tokenPrice: z.union([z.string(), z.number()]).transform((arg) => {
+                return typeof arg === "number" ? arg : parseFloat(arg);
             }),
-            feeRate: z.string().transform((arg) => {
-                return parseFloat(arg);
+            feeRate: z.union([z.string(), z.number()]).transform((arg) => {
+                return typeof arg === "number" ? arg : parseFloat(arg);
             }).optional(),
             routePlan: z.array(
                 z.object({
@@ -54,8 +56,7 @@ export const SwapRequestSchema = z.object({
                     dexId: z.string(),
                 })
             ),
-            // dexFactory: z.string(),
-
+            dexFactory: z.string().optional(),
             dexId: z.string(),
             isNativeIn: z.boolean(),
             isNativeOut: z.boolean(),
@@ -72,7 +73,7 @@ export const SwapRequestSchema = z.object({
         }).optional()
     }),
     params: z.object({
-        chain: z.string().default("0G"),
+        chain: z.string().optional(),
     }).optional(),
 });
 
@@ -97,3 +98,18 @@ export const TokenDetailsRequestSchema = z.object({
 });
 
 export type TokenDetailsRequestType = z.infer<typeof TokenDetailsRequestSchema>["params"]
+
+export const TokenSearchRequestSchema = z.object({
+    params: z.object({
+        chain: z.string().optional(),
+        query: z.string().optional(),
+    }).optional(),
+    query: z.object({
+        query: z.string().optional(),
+        q: z.string().optional(),
+        tick: z.string().optional(),
+        symbol: z.string().optional(),
+    }).optional(),
+});
+
+export type TokenSearchRequestType = z.infer<typeof TokenSearchRequestSchema>;

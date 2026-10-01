@@ -11,8 +11,7 @@ export const AERODROME_BASE_CONFIG: DexConfig = {
     network: "BASE",
     factoryAddress: "0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A", // Aerodrome CL Factory
     quoterAddress: "0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0", // Aerodrome CL Quoter
-    // fromBlock: "14193988", // TODO: real block
-    fromBlock: "36666314", // smaller block for testing
+    fromBlock: process.env.BASE_FROM_BLOCK || "51935000", // recent block for testing
     abi: AERODROME_V3_FACTORY_ABI,
     wrappedNativeTokenAddress: "0x4200000000000000000000000000000000000006", // WETH on Base
     nativeTokenAddress: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",

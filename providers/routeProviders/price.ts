@@ -1,7 +1,10 @@
-// Hermes API endpoint
-const HERMES_URL = 'https://hermes.pyth.network';
+// Price Service with DeFiLlama + DexScreener (Free, No API Key Required) and optional Hermes fallback
 
-interface PriceData {
+const HERMES_URL = 'https://hermes.pyth.network';
+const DEFILLAMA_URL = 'https://coins.llama.fi/prices/current';
+const DEXSCREENER_URL = 'https://api.dexscreener.com/latest/dex';
+
+export interface PriceData {
     symbol: string;
     price: number;
     conf: number;
@@ -10,24 +13,25 @@ interface PriceData {
     priceId: string;
 }
 
-interface PriceResult {
+export interface PriceResult {
     success: boolean;
     data?: PriceData;
     error?: string;
     timestamp: number;
 }
 
-interface MultiplePriceResult {
+export interface MultiplePriceResult {
     success: boolean;
     data?: Record<string, PriceData>;
     error?: string;
     timestamp: number;
 }
 
-// Stable Price Feed IDs (these are permanent and cross-chain)
-const STABLE_PRICE_FEED_IDS: Record<string, string> = {
+// Stable Price Feed IDs (Pyth permanent feed IDs preserved for backward compatibility)
+export const STABLE_PRICE_FEED_IDS: Record<string, string> = {
     'BTC': '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
     'ETH': '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+    'WETH': '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
     'SOL': '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
     'USDC': '0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a',
     'USDT': '0x2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b',
@@ -35,6 +39,7 @@ const STABLE_PRICE_FEED_IDS: Record<string, string> = {
     'ADA': '0x2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d',
     'DOGE': '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
     'MATIC': '0x5de33a9112c2b700b8d30b8a3402c103578ccfa2765696471cc672bd5cf6ac52',
+    'POL': '0x5de33a9112c2b700b8d30b8a3402c103578ccfa2765696471cc672bd5cf6ac52',
     'AVAX': '0x93da3352f9f1d105fdfe4971cfa80e9dd777bfc5d0f683ebb6e1294b92137bb7',
     'LINK': '0x8ac0c70fff57e9aefdf5edf44b51d62c2d433653cbb2cf5cc06bb115af04d221',
     'DOT': '0xca3eed9b267293f6595901c734c7525ce8ef49adafe8284606ceb307afa2ca5b',
@@ -49,31 +54,177 @@ const STABLE_PRICE_FEED_IDS: Record<string, string> = {
     '0G': '0xfa9e8d4591613476ad0961732475dc08969d248faca270cc6c47efe009ea3070'
 };
 
-// Fetch price from Hermes API using Stable Price Feed ID
+// Mapping from symbol to DeFiLlama coin identifier (100% free, no API key needed)
+const SYMBOL_TO_DEFILLAMA: Record<string, string> = {
+    'BTC': 'coingecko:bitcoin',
+    'ETH': 'coingecko:ethereum',
+    'WETH': 'coingecko:ethereum',
+    'SOL': 'coingecko:solana',
+    'USDC': 'coingecko:usd-coin',
+    'USDT': 'coingecko:tether',
+    'BNB': 'coingecko:binancecoin',
+    'ADA': 'coingecko:cardano',
+    'DOGE': 'coingecko:dogecoin',
+    'MATIC': 'coingecko:matic-network',
+    'POL': 'coingecko:matic-network',
+    'AVAX': 'coingecko:avalanche-2',
+    'LINK': 'coingecko:chainlink',
+    'DOT': 'coingecko:polkadot',
+    'UNI': 'coingecko:uniswap',
+    'LTC': 'coingecko:litecoin',
+    'BCH': 'coingecko:bitcoin-cash',
+    'XRP': 'coingecko:ripple',
+    'ATOM': 'coingecko:cosmos',
+    'APT': 'coingecko:aptos',
+    'NEAR': 'coingecko:near',
+    'FTT': 'coingecko:ftx-token',
+    '0G': 'coingecko:zero-gravity',
+    'CLANKER': 'base:0x1bc0c42215582d5A085795f4baDbaC3ff36d1Bcb'
+};
+
+// In-memory cache for prices to avoid repeated network calls (30 second TTL)
+interface CacheEntry {
+    data: PriceData;
+    timestamp: number;
+}
+const localPriceCache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 30 * 1000;
+
+function getFromLocalCache(key: string): PriceData | null {
+    const entry = localPriceCache.get(key.toUpperCase());
+    if (entry && (Date.now() - entry.timestamp < CACHE_TTL_MS)) {
+        return entry.data;
+    }
+    return null;
+}
+
+function setToLocalCache(key: string, data: PriceData): void {
+    localPriceCache.set(key.toUpperCase(), { data, timestamp: Date.now() });
+}
+
+// Reverse mapping for looking up symbol by price ID
+const PRICE_ID_TO_SYMBOL: Record<string, string> = {};
+for (const [symbol, id] of Object.entries(STABLE_PRICE_FEED_IDS)) {
+    PRICE_ID_TO_SYMBOL[id.toLowerCase()] = symbol;
+}
+
+/**
+ * Fetch price from DeFiLlama (Free, public, no key)
+ */
+async function fetchPriceFromDeFiLlama(llamaId: string, symbol: string): Promise<PriceData | null> {
+    try {
+        const response = await fetch(`${DEFILLAMA_URL}/${llamaId}`);
+        if (!response.ok) return null;
+
+        const data = (await response.json()) as any;
+        const coin = data?.coins?.[llamaId];
+        if (!coin || typeof coin.price !== 'number') return null;
+
+        return {
+            symbol: symbol.toUpperCase(),
+            price: coin.price,
+            conf: coin.confidence ?? 0.99,
+            expo: 0,
+            publishTime: coin.timestamp ?? Math.floor(Date.now() / 1000),
+            priceId: STABLE_PRICE_FEED_IDS[symbol.toUpperCase()] || llamaId
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Fetch multiple prices from DeFiLlama in a single batch request
+ */
+async function fetchMultiplePricesFromDeFiLlama(
+    llamaIdToSymbol: Record<string, string>
+): Promise<Record<string, PriceData>> {
+    try {
+        const ids = Object.keys(llamaIdToSymbol);
+        if (ids.length === 0) return {};
+
+        const response = await fetch(`${DEFILLAMA_URL}/${ids.join(',')}`);
+        if (!response.ok) return {};
+
+        const data = (await response.json()) as any;
+        const result: Record<string, PriceData> = {};
+
+        for (const [id, symbol] of Object.entries(llamaIdToSymbol)) {
+            const coin = data?.coins?.[id];
+            if (coin && typeof coin.price === 'number') {
+                const priceData: PriceData = {
+                    symbol: symbol.toUpperCase(),
+                    price: coin.price,
+                    conf: coin.confidence ?? 0.99,
+                    expo: 0,
+                    publishTime: coin.timestamp ?? Math.floor(Date.now() / 1000),
+                    priceId: STABLE_PRICE_FEED_IDS[symbol.toUpperCase()] || id
+                };
+                result[symbol.toUpperCase()] = priceData;
+                setToLocalCache(symbol, priceData);
+            }
+        }
+
+        return result;
+    } catch {
+        return {};
+    }
+}
+
+/**
+ * Fetch token price from DexScreener (Fallback, free, no key)
+ */
+async function fetchPriceFromDexScreener(query: string, symbol: string): Promise<PriceData | null> {
+    try {
+        const url = query.startsWith('0x')
+            ? `${DEXSCREENER_URL}/tokens/${query}`
+            : `${DEXSCREENER_URL}/search?q=${encodeURIComponent(query)}`;
+
+        const response = await fetch(url);
+        if (!response.ok) return null;
+
+        const data = (await response.json()) as any;
+        const pair = data?.pairs?.[0];
+        if (!pair || !pair.priceUsd) return null;
+
+        const price = parseFloat(pair.priceUsd);
+        if (isNaN(price)) return null;
+
+        return {
+            symbol: symbol.toUpperCase(),
+            price,
+            conf: 0.95,
+            expo: 0,
+            publishTime: Math.floor(Date.now() / 1000),
+            priceId: STABLE_PRICE_FEED_IDS[symbol.toUpperCase()] || query
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Optional: Fetch from Hermes if user provided an API key
+ */
 async function fetchPriceFromHermes(priceId: string): Promise<PriceData | null> {
+    const apiKey = process.env.HERMES_API_KEY;
+    if (!apiKey) return null;
+
     try {
         const response = await fetch(
-            `${HERMES_URL}/api/latest_price_feeds?ids[]=${priceId}&verbose=false&binary=false`
+            `${HERMES_URL}/api/latest_price_feeds?ids[]=${priceId}&verbose=false&binary=false`,
+            { headers: { Authorization: `Bearer ${apiKey}` } }
         );
 
-        if (!response.ok) {
-            throw new Error(`Hermes API error: ${response.status} ${response.statusText}`);
-        }
+        if (!response.ok) return null;
 
-        const data = await response.json();
-
-        if (!data || !Array.isArray(data) || data.length === 0) {
-            return null;
-        }
+        const data = (await response.json()) as any;
+        if (!data || !Array.isArray(data) || data.length === 0) return null;
 
         const priceData = data[0];
         const price = priceData.price;
+        if (!price || !price.price) return null;
 
-        if (!price || !price.price) {
-            return null;
-        }
-
-        // Convert price using the exponent
         const normalizedPrice = parseFloat(price.price) * Math.pow(10, price.expo);
         const normalizedConf = parseFloat(price.conf) * Math.pow(10, price.expo);
 
@@ -85,59 +236,92 @@ async function fetchPriceFromHermes(priceId: string): Promise<PriceData | null> 
             publishTime: parseInt(price.publish_time),
             priceId: priceData.id
         };
-    } catch (error) {
-        console.error('Error fetching from Hermes:', error);
+    } catch {
         return null;
     }
 }
 
-// Fetch multiple prices in batch
-async function fetchMultiplePricesFromHermes(priceIds: string[]): Promise<Record<string, PriceData>> {
+/**
+ * Get USD price for a token by symbol (DeFiLlama primary, DexScreener fallback)
+ */
+export async function getTokenPrice(symbol: string): Promise<PriceResult> {
+    const upperSymbol = symbol.toUpperCase();
+    const result: PriceResult = {
+        success: false,
+        timestamp: Date.now()
+    };
+
     try {
-        const idsParam = priceIds.map(id => `ids[]=${id}`).join('&');
-        const response = await fetch(
-            `${HERMES_URL}/api/latest_price_feeds?${idsParam}&verbose=false&binary=false`
-        );
-
-        if (!response.ok) {
-            throw new Error(`Hermes API error: ${response.status} ${response.statusText}`);
+        // 1. Check local cache
+        const cached = getFromLocalCache(upperSymbol);
+        if (cached) {
+            return { success: true, data: cached, timestamp: Date.now() };
         }
 
-        const data = await response.json();
-        const result: Record<string, PriceData> = {};
-
-        if (!Array.isArray(data)) {
-            return result;
+        // Special handling for stablecoins
+        if (upperSymbol === 'USDC' || upperSymbol === 'USDT' || upperSymbol === 'DAI') {
+            const stableData: PriceData = {
+                symbol: upperSymbol,
+                price: 1.0,
+                conf: 1.0,
+                expo: 0,
+                publishTime: Math.floor(Date.now() / 1000),
+                priceId: STABLE_PRICE_FEED_IDS[upperSymbol] || upperSymbol
+            };
+            setToLocalCache(upperSymbol, stableData);
+            return { success: true, data: stableData, timestamp: Date.now() };
         }
 
-        data.forEach((item: any) => {
-            const price = item.price;
-            if (price && price.price) {
-                const normalizedPrice = parseFloat(price.price) * Math.pow(10, price.expo);
-                const normalizedConf = parseFloat(price.conf) * Math.pow(10, price.expo);
-
-                result[item.id] = {
-                    symbol: item.id,
-                    price: normalizedPrice,
-                    conf: normalizedConf,
-                    expo: price.expo,
-                    publishTime: parseInt(price.publish_time),
-                    priceId: item.id
-                };
+        // 2. Try Hermes if API key is explicitly configured
+        const priceId = STABLE_PRICE_FEED_IDS[upperSymbol];
+        if (priceId && process.env.HERMES_API_KEY) {
+            const hermesData = await fetchPriceFromHermes(priceId);
+            if (hermesData) {
+                setToLocalCache(upperSymbol, hermesData);
+                return { success: true, data: hermesData, timestamp: Date.now() };
             }
-        });
+        }
 
+        // 3. Try DeFiLlama (Free, fast, no key)
+        const llamaId = SYMBOL_TO_DEFILLAMA[upperSymbol];
+        if (llamaId) {
+            const llamaData = await fetchPriceFromDeFiLlama(llamaId, upperSymbol);
+            if (llamaData) {
+                setToLocalCache(upperSymbol, llamaData);
+                return { success: true, data: llamaData, timestamp: Date.now() };
+            }
+        }
+
+        // 4. Try DexScreener (Fallback, free)
+        const dexData = await fetchPriceFromDexScreener(upperSymbol, upperSymbol);
+        if (dexData) {
+            setToLocalCache(upperSymbol, dexData);
+            return { success: true, data: dexData, timestamp: Date.now() };
+        }
+
+        // Special fallback for 0G (testnet/development)
+        if (upperSymbol === '0G') {
+            const ogData: PriceData = {
+                symbol: '0G',
+                price: 1.0,
+                conf: 1.0,
+                expo: 0,
+                publishTime: Math.floor(Date.now() / 1000),
+                priceId: STABLE_PRICE_FEED_IDS['0G']
+            };
+            return { success: true, data: ogData, timestamp: Date.now() };
+        }
+
+        result.error = `Unable to fetch price for symbol: ${upperSymbol}`;
         return result;
     } catch (error) {
-        console.error('Error fetching multiple prices from Hermes:', error);
-        return {};
+        result.error = error instanceof Error ? error.message : 'Unknown error occurred';
+        return result;
     }
 }
 
 /**
  * Get USD price for a token using Stable Price Feed ID directly
- * @param priceId - Pyth Stable Price Feed ID (e.g., '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43')
- * @returns Promise<PriceResult>
  */
 export async function getTokenPriceById(priceId: string): Promise<PriceResult> {
     const result: PriceResult = {
@@ -151,19 +335,80 @@ export async function getTokenPriceById(priceId: string): Promise<PriceResult> {
             return result;
         }
 
-        const priceData = await fetchPriceFromHermes(priceId);
+        // 1. Try Hermes if key is set
+        if (process.env.HERMES_API_KEY) {
+            const hermesData = await fetchPriceFromHermes(priceId);
+            if (hermesData) {
+                result.success = true;
+                result.data = hermesData;
+                return result;
+            }
+        }
 
-        if (!priceData) {
-            result.error = `Failed to fetch price data for price ID: ${priceId}`;
-            return result;
+        // 2. Reverse-map priceId to symbol and fetch via DeFiLlama
+        const symbol = PRICE_ID_TO_SYMBOL[priceId.toLowerCase()];
+        if (symbol) {
+            return await getTokenPrice(symbol);
+        }
+
+        result.error = `Failed to fetch price data for price ID: ${priceId}`;
+        return result;
+    } catch (error) {
+        result.error = error instanceof Error ? error.message : 'Unknown error occurred';
+        return result;
+    }
+}
+
+/**
+ * Get USD prices for multiple tokens by symbols
+ */
+export async function getMultipleTokenPrices(symbols?: string[] | string): Promise<MultiplePriceResult> {
+    const result: MultiplePriceResult = {
+        success: false,
+        timestamp: Date.now()
+    };
+
+    try {
+        let requestedSymbols: string[] = [];
+        if (typeof symbols === 'string') {
+            requestedSymbols = symbols.split(',').map(s => s.trim().toUpperCase());
+        } else if (Array.isArray(symbols)) {
+            requestedSymbols = symbols.map(s => s.trim().toUpperCase());
+        } else {
+            requestedSymbols = Object.keys(STABLE_PRICE_FEED_IDS);
+        }
+
+        const llamaIdToSymbol: Record<string, string> = {};
+        const finalResult: Record<string, PriceData> = {};
+
+        for (const sym of requestedSymbols) {
+            const cached = getFromLocalCache(sym);
+            if (cached) {
+                finalResult[sym] = cached;
+            } else if (sym === 'USDC' || sym === 'USDT') {
+                const stable: PriceData = {
+                    symbol: sym,
+                    price: 1.0,
+                    conf: 1.0,
+                    expo: 0,
+                    publishTime: Math.floor(Date.now() / 1000),
+                    priceId: STABLE_PRICE_FEED_IDS[sym] || sym
+                };
+                finalResult[sym] = stable;
+            } else if (SYMBOL_TO_DEFILLAMA[sym]) {
+                llamaIdToSymbol[SYMBOL_TO_DEFILLAMA[sym]] = sym;
+            }
+        }
+
+        if (Object.keys(llamaIdToSymbol).length > 0) {
+            const fetched = await fetchMultiplePricesFromDeFiLlama(llamaIdToSymbol);
+            Object.assign(finalResult, fetched);
         }
 
         result.success = true;
-        result.data = priceData;
-
+        result.data = finalResult;
         return result;
     } catch (error) {
-        console.error('Error getting token price by ID:', error);
         result.error = error instanceof Error ? error.message : 'Unknown error occurred';
         return result;
     }
@@ -171,8 +416,6 @@ export async function getTokenPriceById(priceId: string): Promise<PriceResult> {
 
 /**
  * Get USD prices for multiple tokens using Stable Price Feed IDs
- * @param priceIds - Array of Pyth Stable Price Feed IDs
- * @returns Promise<MultiplePriceResult>
  */
 export async function getMultipleTokenPricesById(priceIds: string[]): Promise<MultiplePriceResult> {
     const result: MultiplePriceResult = {
@@ -186,198 +429,133 @@ export async function getMultipleTokenPricesById(priceIds: string[]): Promise<Mu
             return result;
         }
 
-        const validPriceIds = priceIds.filter(id => id && typeof id === 'string');
+        const symbolsToFetch: string[] = [];
+        const idToSymbol: Record<string, string> = {};
 
-        if (validPriceIds.length === 0) {
-            result.error = 'No valid price IDs found in the array';
+        for (const id of priceIds) {
+            const sym = PRICE_ID_TO_SYMBOL[id.toLowerCase()];
+            if (sym) {
+                symbolsToFetch.push(sym);
+                idToSymbol[id] = sym;
+            }
+        }
+
+        const pricesResult = await getMultipleTokenPrices(symbolsToFetch);
+        if (!pricesResult.success || !pricesResult.data) {
+            result.error = pricesResult.error || 'Failed to fetch prices';
             return result;
         }
 
-        const pricesData = await fetchMultiplePricesFromHermes(validPriceIds);
-
-        if (Object.keys(pricesData).length === 0) {
-            result.error = 'No price data returned for the provided price IDs';
-            return result;
+        const dataById: Record<string, PriceData> = {};
+        for (const [id, sym] of Object.entries(idToSymbol)) {
+            if (pricesResult.data[sym]) {
+                dataById[id] = pricesResult.data[sym];
+            }
         }
 
         result.success = true;
-        result.data = pricesData;
-
+        result.data = dataById;
         return result;
     } catch (error) {
-        console.error('Error getting multiple token prices by ID:', error);
         result.error = error instanceof Error ? error.message : 'Unknown error occurred';
         return result;
     }
 }
 
 /**
- * Get USD price for a token by symbol (using predefined Stable Price Feed IDs)
- * @param symbol - Token symbol (e.g., 'BTC', 'ETH', 'SOL')
- * @returns Promise<PriceResult>
+ * Fetch price directly by chain and token address using DeFiLlama / DexScreener
  */
-export async function getTokenPrice(symbol: string): Promise<PriceResult> {
-    const upperSymbol = symbol.toUpperCase();
-
+export async function getTokenPriceByAddress(chain: string, tokenAddress: string): Promise<PriceResult> {
     const result: PriceResult = {
         success: false,
         timestamp: Date.now()
     };
 
+    const cleanAddress = tokenAddress.toLowerCase();
+    const chainPrefix = chain.toLowerCase();
+
+    // 1. Try DeFiLlama by chain:address
     try {
-        const priceId = STABLE_PRICE_FEED_IDS[upperSymbol];
-
-        if (!priceId) {
-            result.error = `Price feed not found for symbol: ${upperSymbol}. Available symbols: ${Object.keys(STABLE_PRICE_FEED_IDS).join(', ')}`;
-            return result;
-        }
-
-        const priceResult = await getTokenPriceById(priceId);
-
-        if (!priceResult.success) {
-            result.error = priceResult.error;
-            return result;
-        }
-
-        result.success = true;
-        result.data = {
-            ...priceResult.data!,
-            symbol: upperSymbol
-        };
-
-        return result;
-    } catch (error) {
-        console.error('Error getting token price:', error);
-        result.error = error instanceof Error ? error.message : 'Unknown error occurred';
-        return result;
-    }
-}
-
-/**
- * Get USD prices for multiple tokens by symbols
- * @param symbols - Array of token symbols or single symbol string
- * @returns Promise<MultiplePriceResult>
- */
-export async function getMultipleTokenPrices(symbols?: string[] | string): Promise<MultiplePriceResult> {
-    const result: MultiplePriceResult = {
-        success: false,
-        timestamp: Date.now()
-    };
-
-    try {
-        let requestedSymbols: string[] = [];
-
-        if (typeof symbols === 'string') {
-            requestedSymbols = symbols.split(',').map(s => s.trim().toUpperCase());
-        } else if (Array.isArray(symbols)) {
-            requestedSymbols = symbols.map(s => s.trim().toUpperCase());
-        } else {
-            // If no symbols specified, return all available
-            requestedSymbols = Object.keys(STABLE_PRICE_FEED_IDS);
-        }
-
-        const priceIds: string[] = [];
-        const symbolToPriceId: Record<string, string> = {};
-
-        requestedSymbols.forEach(symbol => {
-            const priceId = STABLE_PRICE_FEED_IDS[symbol];
-            if (priceId) {
-                priceIds.push(priceId);
-                symbolToPriceId[priceId] = symbol;
-            }
-        });
-
-        if (priceIds.length === 0) {
-            result.error = `No valid symbols found. Available: ${Object.keys(STABLE_PRICE_FEED_IDS).join(', ')}`;
-            return result;
-        }
-
-        const pricesResult = await getMultipleTokenPricesById(priceIds);
-
-        if (!pricesResult.success) {
-            result.error = pricesResult.error;
-            return result;
-        }
-
-        const finalResult: Record<string, PriceData> = {};
-        Object.entries(pricesResult.data!).forEach(([priceId, data]) => {
-            const symbol = symbolToPriceId[priceId];
-            if (symbol) {
-                finalResult[symbol] = {
-                    ...data,
-                    symbol
+        const llamaKey = `${chainPrefix}:${cleanAddress}`;
+        const response = await fetch(`${DEFILLAMA_URL}/${llamaKey}`);
+        if (response.ok) {
+            const data = (await response.json()) as any;
+            const coin = data?.coins?.[llamaKey];
+            if (coin && typeof coin.price === 'number') {
+                const priceData: PriceData = {
+                    symbol: coin.symbol || cleanAddress.slice(0, 6),
+                    price: coin.price,
+                    conf: coin.confidence ?? 0.99,
+                    expo: 0,
+                    publishTime: coin.timestamp ?? Math.floor(Date.now() / 1000),
+                    priceId: cleanAddress
                 };
+                result.success = true;
+                result.data = priceData;
+                return result;
             }
-        });
+        }
+    } catch {}
 
-        result.success = true;
-        result.data = finalResult;
+    // 2. Try DexScreener by token address
+    try {
+        const dexRes = await fetch(`${DEXSCREENER_URL}/tokens/${cleanAddress}`);
+        if (dexRes.ok) {
+            const dexData = (await dexRes.json()) as any;
+            const pair = dexData?.pairs?.[0];
+            if (pair && pair.priceUsd) {
+                const price = parseFloat(pair.priceUsd);
+                if (!isNaN(price)) {
+                    const priceData: PriceData = {
+                        symbol: pair.baseToken?.symbol || cleanAddress.slice(0, 6),
+                        price,
+                        conf: 0.95,
+                        expo: 0,
+                        publishTime: Math.floor(Date.now() / 1000),
+                        priceId: cleanAddress
+                    };
+                    result.success = true;
+                    result.data = priceData;
+                    return result;
+                }
+            }
+        }
+    } catch {}
 
-        return result;
-    } catch (error) {
-        console.error('Error getting multiple token prices:', error);
-        result.error = error instanceof Error ? error.message : 'Unknown error occurred';
-        return result;
-    }
+    result.error = `Unable to fetch price for address: ${tokenAddress}`;
+    return result;
 }
 
-/**
- * Get list of available token symbols
- * @returns Array of available token symbols
- */
 export function getAvailableSymbols(): string[] {
     return Object.keys(STABLE_PRICE_FEED_IDS);
 }
 
-/**
- * Get Stable Price Feed ID for a token symbol
- * @param symbol - Token symbol
- * @returns Stable Price Feed ID or null if not found
- */
 export function getPriceFeedId(symbol: string): string | null {
     return STABLE_PRICE_FEED_IDS[symbol.toUpperCase()] || null;
 }
 
-/**
- * Add a new Stable Price Feed ID for a token symbol
- * @param symbol - Token symbol
- * @param priceId - Pyth Stable Price Feed ID
- */
 export function addPriceFeed(symbol: string, priceId: string): void {
-    STABLE_PRICE_FEED_IDS[symbol.toUpperCase()] = priceId;
+    const upper = symbol.toUpperCase();
+    STABLE_PRICE_FEED_IDS[upper] = priceId;
+    PRICE_ID_TO_SYMBOL[priceId.toLowerCase()] = upper;
 }
 
-/**
- * Simple wrapper to get just the price number (throws on error)
- * @param symbol - Token symbol
- * @returns Promise<number> - USD price
- */
 export async function getPrice(symbol: string): Promise<number> {
     const result = await getTokenPrice(symbol);
     if (!result.success || !result.data) {
-        throw new Error(result.error || 'Failed to get price');
+        throw new Error(result.error || `Failed to get price for ${symbol}`);
     }
     return result.data.price;
 }
 
-/**
- * Simple wrapper to get price by Stable Price Feed ID (throws on error)
- * @param priceId - Stable Price Feed ID
- * @returns Promise<number> - USD price
- */
 export async function getPriceById(priceId: string): Promise<number> {
     const result = await getTokenPriceById(priceId);
     if (!result.success || !result.data) {
-        throw new Error(result.error || 'Failed to get price');
+        throw new Error(result.error || `Failed to get price for ID ${priceId}`);
     }
     return result.data.price;
 }
 
-/**
- * Get multiple prices as a simple object (throws on error)
- * @param symbols - Array of symbols or single symbol
- * @returns Promise<Record<string, number>> - Symbol to USD price mapping
- */
 export async function getPrices(symbols?: string[] | string): Promise<Record<string, number>> {
     const result = await getMultipleTokenPrices(symbols);
     if (!result.success || !result.data) {
@@ -385,23 +563,22 @@ export async function getPrices(symbols?: string[] | string): Promise<Record<str
     }
 
     const prices: Record<string, number> = {};
-    Object.entries(result.data).forEach(([symbol, data]) => {
+    for (const [symbol, data] of Object.entries(result.data)) {
         prices[symbol] = data.price;
-    });
-
+    }
     return prices;
 }
 
 export const get0gPrice = async (): Promise<PriceResult> => {
     return await getTokenPrice('0G');
-}
+};
 
-// Default export for convenience
 export default {
     getTokenPrice,
     getTokenPriceById,
     getMultipleTokenPrices,
     getMultipleTokenPricesById,
+    getTokenPriceByAddress,
     getAvailableSymbols,
     getPriceFeedId,
     addPriceFeed,
@@ -409,4 +586,3 @@ export default {
     getPriceById,
     getPrices
 };
-

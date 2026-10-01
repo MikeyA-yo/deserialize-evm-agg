@@ -1,10 +1,11 @@
+import "dotenv/config";
 import { DexCache } from "@deserialize-evm-agg/cache";
 import { wait, ZeroGRoute, getChainAllRoute, ZiaRoute, getChainDexIds, getChainDexIdList, PancakeV3Route, AerodromeV3Route, UniswapV3BaseRoute, } from "@deserialize-evm-agg/routes-providers";
 import { config } from "../config";
 import { JsonRpcProvider } from "ethers";
 import { createClient, RedisClientType } from "redis";
 import { checkIfGraphIsEmpty, Edge, EdgeData, Graph } from "@deserialize-evm-agg/graph";
-import { AllRoute } from "@deserialize-evm-agg/routes-providers/dist/AllContructor";
+import { AllRoute, BaseChain } from "@deserialize-evm-agg/routes-providers";
 
 
 
@@ -68,7 +69,11 @@ let lastFullRebuild = 0;
  * Smart update that decides what needs to be done
  */
 const updateCacheDataSmart = async (rpc: string) => {
-    const provider = new JsonRpcProvider(rpc);
+    const provider = new JsonRpcProvider(rpc, BaseChain.chainId, {
+        staticNetwork: true,
+        batchMaxCount: 1,
+    });
+    provider._getConnection().timeout = 10_000;
     const cache = await initAndGetCache();
     const AllRoute = getChainAllRoute("BASE");
     const allRoute = new AllRoute(provider, cache);
@@ -344,7 +349,7 @@ const fullRebuildCache = async (
 
 const chain = {
     name: "BASE",
-    rpc: "https://base-mainnet.g.alchemy.com/v2/GhfzutibWR1GT8N3aRI_H"
+    rpc: process.env.BASE_RPC_URL || "https://mainnet.base.org"
 };
 
 let isUpdating = false;

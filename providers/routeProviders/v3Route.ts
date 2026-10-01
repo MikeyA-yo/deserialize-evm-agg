@@ -4,7 +4,7 @@ import Decimal from "decimal.js";
 import { NetworkType } from "deserialize-evm-server-sdk";
 import { JsonRpcProvider, TransactionRequest } from "ethers";
 import { DeserializeRoutePlan, IRoute, SwapQuoteParamWithEdgeData, SwapQuoteParamWithEdgeDataString } from "./IRoute";
-import { ChainConfig, DexConfig, PoolData, PoolInfo, UniswapV3QuoteCalculator, ZeroDexQuoteParams } from "./UniswapV3Calculator";
+import { ChainConfig, createJsonRpcProvider, DexConfig, PoolData, PoolInfo, UniswapV3QuoteCalculator, ZeroDexQuoteParams } from "./UniswapV3Calculator";
 import { ArrayBiMap, Edge, EdgeData, FunctionToMutateTheEdgeCostType, Graph, TokenBiMap } from "@deserialize-evm-agg/graph";
 import { transformRoutePlanToIPath } from "./utils";
 
@@ -23,7 +23,7 @@ export const createV3Route = <DexIdTypes>(
     config: DexConfig,
     chain: ChainConfig,
     dexId: DexIdTypes,
-    calculator: UniswapV3QuoteCalculator = new UniswapV3QuoteCalculator(config, chain, new JsonRpcProvider(chain.rpcUrl))
+    calculator: UniswapV3QuoteCalculator = new UniswapV3QuoteCalculator(config, chain, createJsonRpcProvider(chain.rpcUrl, chain.chainId))
 ): V3RouteConstructor<DexIdTypes> => {
     return class ConfiguredV3Route extends BaseV3Route<DexIdTypes> {
         constructor(provider: JsonRpcProvider, cache: DexCache<DexIdTypes>) {
@@ -139,7 +139,7 @@ export class BaseV3Route<DexIdTypes> implements IRoute<PoolData, DexIdTypes> {
         // Fetch token data
         const lastBlock = await this.cache.getLastBlockFetched(this.name)
         const data = await this.calculator.getAllPools(this.dexConfig.abi, lastBlock ? lastBlock.toString() : undefined)
-        const newLastBlock = data[data.length - 1].blockNumber
+        const newLastBlock = data && data.length > 0 ? data[data.length - 1]?.blockNumber : undefined;
         console.log('newLastBlock: ', newLastBlock);
         // console.log('data: ', data);
         const tokenBiMap = new ArrayBiMap<string>();
@@ -293,7 +293,7 @@ export class BaseV3Route<DexIdTypes> implements IRoute<PoolData, DexIdTypes> {
         }
         // Initialize graph
         // console.log('data: ', data);
-        const graph: Graph = Array.from({ length: data.length }, () => []);
+        const graph: Graph = Array.from({ length: tokenIndexBiMap.toArray().length }, () => []);
         // Set the concurrency limit (number of pools processed concurrently)
         const CONCURRENCY_LIMIT = 1;
 
@@ -404,7 +404,12 @@ export class BaseV3Route<DexIdTypes> implements IRoute<PoolData, DexIdTypes> {
     };
     findUpdateTokenPairPools = async (tokenA: string, tokenB: string): Promise<{ newGraph: Graph, newTokenBiMap: ArrayBiMap<string> }> => {
         const foundPools = await this.calculator.findAllPools(tokenA, tokenB);
-        const biMap = await this.getTokenBiMap<PoolData>()
+        const cachedBiMap = await this.cache.getDexTokenIndexBiMapCache<PoolData>(this.name, this.formatPool);
+        const biMap: TokenBiMap<PoolData> = cachedBiMap ?? {
+            tokenBiMap: new ArrayBiMap<string>(),
+            data: [],
+            tokenPoolMap: new Map<string, string>(),
+        };
         const tokenBiMap = biMap.tokenBiMap
         const tokenPoolMap = biMap.tokenPoolMap
 

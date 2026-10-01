@@ -4,7 +4,7 @@
  */
 
 import { JsonRpcProvider } from "ethers";
-import { UniswapV3QuoteCalculator, DexConfig, PoolData, PoolCreatedEvent, ChainConfig, QuoteParams, QuoteResult } from "./UniswapV3Calculator";
+import { UniswapV3QuoteCalculator, DexConfig, PoolData, PoolCreatedEvent, ChainConfig, QuoteParams, QuoteResult, createJsonRpcProvider } from "./UniswapV3Calculator";
 import { NetworkType } from "deserialize-evm-server-sdk";
 import { Network } from "./constants";
 import Decimal from "decimal.js";
@@ -124,7 +124,7 @@ export const PANCAKESWAP_V3_QUOTER_V2_ABI = [
 
 export class PancakeSwapV3Calculator extends UniswapV3QuoteCalculator {
     constructor(dexConfig: DexConfig, chainConfig: ChainConfig, _provider?: JsonRpcProvider) {
-        const provider = _provider || new JsonRpcProvider(chainConfig.rpcUrl);
+        const provider = _provider || createJsonRpcProvider(chainConfig.rpcUrl, chainConfig.chainId);
         super(dexConfig, chainConfig, provider);
     }
 
@@ -133,6 +133,14 @@ export class PancakeSwapV3Calculator extends UniswapV3QuoteCalculator {
      */
     protected getFeeTiers(): number[] {
         return PANCAKESWAP_V3_FEE_TIERS;
+    }
+
+    public async findBestPool(tokenA: string, tokenB: string, feeTiers = PANCAKESWAP_V3_FEE_TIERS) {
+        return super.findBestPool(tokenA, tokenB, feeTiers);
+    }
+
+    public async findAllPools(tokenA: string, tokenB: string, feeTiers = PANCAKESWAP_V3_FEE_TIERS) {
+        return super.findAllPools(tokenA, tokenB, feeTiers);
     }
 
     public async getQuote(params: QuoteParams): Promise<QuoteResult> {

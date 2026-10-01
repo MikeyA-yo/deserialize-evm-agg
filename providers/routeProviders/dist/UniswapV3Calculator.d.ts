@@ -5,6 +5,7 @@
  * Supports multiple networks and can be easily extended for different protocols.
  */
 import { ethers, Contract, JsonRpcProvider } from "ethers";
+export declare const createJsonRpcProvider: (rpcUrl: string, chainId: number) => ethers.JsonRpcProvider;
 import Decimal from "decimal.js";
 import { Token } from "./type";
 import { NetworkType } from "./constants";
@@ -131,6 +132,7 @@ export declare class UniswapV3QuoteCalculator {
     getSureTokenPrice(tokenAddress: string, _provider?: ethers.JsonRpcProvider): Promise<number>;
     private wait;
     private isCacheValid;
+    protected retryWithBackoff<T>(fn: () => Promise<T>, retries?: number, delayMs?: number): Promise<T>;
     getTokenDetails(tokenAddress: string, provider?: ethers.JsonRpcProvider): Promise<Token>;
     getTokenPrice(tokenAddress: string): Promise<number>;
     private getTokenPriceFromExternalAPI;

@@ -5,14 +5,17 @@ const ethers_1 = require("ethers");
 const UniswapV3Calculator_1 = require("./UniswapV3Calculator");
 const transformRoutePlanToIPath = (factoryAddress, routePlan, nativeTokenAddress, warpedTokenAddress, isNativeIn, isNativeOut) => {
     const plan = [];
-    for (const route of routePlan) {
+    for (let i = 0; i < routePlan.length; i++) {
+        const route = routePlan[i];
+        const isFirstHop = i === 0;
+        const isLastHop = i === routePlan.length - 1;
+        const replaceIn = isNativeIn && isFirstHop && route.tokenA.toLowerCase() === warpedTokenAddress.toLowerCase();
+        const replaceOut = isNativeOut && isLastHop && route.tokenB.toLowerCase() === warpedTokenAddress.toLowerCase();
         const path = {
-            factory: factoryAddress, // Assuming factory is always ZERO_G for this example
+            factory: factoryAddress,
             poolAddress: route.poolAddress,
-            // tokenIn: route.aToB ? route.tokenA : route.tokenB,
-            tokenIn: isNativeIn ? route.tokenA.toLowerCase() === warpedTokenAddress.toLowerCase() ? nativeTokenAddress : route.tokenA : route.tokenA,
-            // tokenOut: route.aToB ? route.tokenB : route.tokenA,
-            tokenOut: isNativeOut ? route.tokenB.toLowerCase() === warpedTokenAddress.toLowerCase() ? nativeTokenAddress : route.tokenB : route.tokenB,
+            tokenIn: replaceIn ? nativeTokenAddress : route.tokenA,
+            tokenOut: replaceOut ? nativeTokenAddress : route.tokenB,
             fee: route.fee,
         };
         plan.push(path);

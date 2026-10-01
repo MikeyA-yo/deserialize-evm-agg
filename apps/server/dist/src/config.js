@@ -25,9 +25,9 @@ const envSchema = zod_1.z.object({
     }),
     // DEV_KEY_FOR_LOOKUP_TABLE: z.string(),
     // SERVER_BASE_URL: z.string(),
-    REDIS_PASSWORD: zod_1.z.string(),
-    REDIS_USER: zod_1.z.string(),
-    REDIS_PORT: zod_1.z.string(),
+    REDIS_PASSWORD: zod_1.z.string().optional().default(""),
+    REDIS_USER: zod_1.z.string().optional().default(""),
+    REDIS_PORT: zod_1.z.string().default("6379"),
 });
 // Parse and validate the environment variables
 const parsedEnv = envSchema.safeParse(process.env);
@@ -35,11 +35,15 @@ if (!parsedEnv.success) {
     console.error("❌ Invalid environment variables:", parsedEnv.error.format());
     process.exit(1); // Exit the application if environment validation fails
 }
-const host = process.env.HOST || "localhost";
+const host = process.env.HOST || "127.0.0.1";
 const hostToUse = host;
 const env = parsedEnv.data;
 exports.env = env;
+const authPart = env.REDIS_PASSWORD
+    ? (env.REDIS_USER && env.REDIS_USER !== "default" ? `${env.REDIS_USER}:${env.REDIS_PASSWORD}@` : `:${env.REDIS_PASSWORD}@`)
+    : "";
+const redisUrl = process.env.REDIS_URL || `redis://${authPart}${hostToUse}:${env.REDIS_PORT}`;
 const config = {
-    REDIS_URL: `redis://${env.REDIS_USER}:${env.REDIS_PASSWORD}@${hostToUse}:${env.REDIS_PORT}`,
+    REDIS_URL: redisUrl,
 };
 exports.config = config;

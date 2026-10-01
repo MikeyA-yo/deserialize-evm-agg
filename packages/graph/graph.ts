@@ -311,7 +311,7 @@ const calculateTheCost = (path: number[], dist: number[]) => {
 };
 
 export const checkIfGraphIsEmpty = (graph: Graph) => {
-  if (graph.length < 1) return false;
+  if (!graph || graph.length < 1) return true;
   //check if at least halve of the graph nodes are not empty
   const half = Math.floor(graph.length / 4);
   let nonEmptyNodes = 0;

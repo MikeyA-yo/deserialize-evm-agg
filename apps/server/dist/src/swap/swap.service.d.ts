@@ -2,7 +2,7 @@ import { JsonRpcProvider } from "ethers";
 import { SwapQuoteRequestType, SwapRequestType } from "./swap.schema";
 import Decimal from "decimal.js";
 import { AllDexIdTypes } from "@deserialize-evm-agg/routes-providers";
-import { NetworkType } from "@deserialize-evm-agg/routes-providers/dist/constants";
+import { NetworkType } from "@deserialize-evm-agg/routes-providers";
 export declare const swapQuoteService: (params: SwapQuoteRequestType, provider: JsonRpcProvider, network: NetworkType) => Promise<{
     tokenA: string;
     tokenB: string;

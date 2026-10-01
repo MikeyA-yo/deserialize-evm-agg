@@ -6,6 +6,15 @@
  */
 
 import { ethers, Contract, JsonRpcProvider } from "ethers";
+
+export const createJsonRpcProvider = (rpcUrl: string, chainId: number) => {
+    const request = new ethers.FetchRequest(rpcUrl);
+    request.timeout = 10_000;
+    return new ethers.JsonRpcProvider(request, chainId, {
+        staticNetwork: true,
+        batchMaxCount: 1,
+    });
+};
 import Decimal from "decimal.js";
 import { get0gPrice, getTokenPrice } from "./price";
 
@@ -225,7 +234,7 @@ export class UniswapV3QuoteCalculator {
     private readonly CACHE_DURATION = 0.5 * 60 * 1000; // 5 minutes
 
     constructor(config: DexConfig, chainConfig: ChainConfig, _provider?: JsonRpcProvider) {
-        const provider = _provider ? _provider : new ethers.JsonRpcProvider(chainConfig.rpcUrl);
+        const provider = _provider ? _provider : createJsonRpcProvider(chainConfig.rpcUrl, chainConfig.chainId);
         this.config = config;
         this.provider = provider
         this.priceCache = new Map();
@@ -250,7 +259,12 @@ export class UniswapV3QuoteCalculator {
 
 
                 },
-                transport: http(chainConfig.rpcUrl)
+                transport: http(chainConfig.rpcUrl, {
+                    batch: false,
+                    timeout: 10_000,
+                    retryCount: 2,
+                    retryDelay: 400,
+                })
             },
 
         )
@@ -295,7 +309,7 @@ export class UniswapV3QuoteCalculator {
         const tokenSymbol = tokenData.symbol.toUpperCase();
         console.log(`Fetching price for token: ${tokenSymbol}`);
         if (tokenSymbol.toLowerCase() === "usdt_v1") return 1 //for the custom USDT token
-        const cPrice = await this.getTokenPriceFromExternalAPI(tokenSymbol);
+        const cPrice = await this.getTokenPriceFromExternalAPI(tokenSymbol, tokenAddress);
         this.setPriceInPriceMap(tokenAddress, cPrice);
         return cPrice;
     }
@@ -310,37 +324,54 @@ export class UniswapV3QuoteCalculator {
         return Date.now() - timestamp < this.CACHE_DURATION;
     }
 
-    // ==================== TOKEN METHODS ====================
+    protected async retryWithBackoff<T>(fn: () => Promise<T>, retries = 3, delayMs = 400): Promise<T> {
+        for (let i = 0; i < retries; i++) {
+            try {
+                return await fn();
+            } catch (err: any) {
+                if (i === retries - 1) throw err;
+                await new Promise(r => setTimeout(r, delayMs * (i + 1)));
+            }
+        }
+        throw new Error('Retries exceeded');
+    }
 
     public async getTokenDetails(tokenAddress: string, provider = this.provider): Promise<Token> {
         if (tokenAddress.toLowerCase() === this.config.nativeTokenAddress.toLowerCase()) {
-            tokenAddress = this.config.wrappedNativeTokenAddress
+            tokenAddress = this.config.wrappedNativeTokenAddress;
         }
         const cacheKey = `token_${tokenAddress}`;
         const cached = this.poolCache.get(cacheKey);
 
         if (cached) {
-            return cached as any; // Cast for token details
+            return cached as any;
         }
 
-        // console.log('tokenAddress: ', tokenAddress);
-        // console.log('tokenAddress: ', tokenAddress);
-        // console.log('tokenAddress: ', tokenAddress);
-        // console.log('tokenAddress: ', tokenAddress);
         const tokenContract = new Contract(tokenAddress, ERC20_ABI, provider);
-        const [decimals, symbol, name] = await Promise.all([
-            tokenContract.decimals(),
-            tokenContract.symbol(),
-            tokenContract.name(),
-        ]);
+        let decimals = 18;
+        let symbol = tokenAddress.slice(0, 6);
+        let name = symbol;
+
+        try {
+            decimals = Number(await this.retryWithBackoff(() => tokenContract.decimals()));
+        } catch {}
+        try {
+            symbol = await this.retryWithBackoff(() => tokenContract.symbol());
+        } catch {}
+        try {
+            name = await this.retryWithBackoff(() => tokenContract.name());
+        } catch {
+            name = symbol;
+        }
 
         const tokenDetails: Token = {
             address: tokenAddress,
-            decimals: Number(decimals),
-            symbol: symbol,
-            name: name
+            decimals,
+            symbol,
+            name
         };
 
+        this.poolCache.set(cacheKey, tokenDetails as any);
         return tokenDetails;
     }
 
@@ -364,7 +395,7 @@ export class UniswapV3QuoteCalculator {
         // Fallback to external API
         try {
             const tokenData = await this.getTokenDetails(tokenAddress);
-            const price = await this.getTokenPriceFromExternalAPI(tokenData.symbol);
+            const price = await this.getTokenPriceFromExternalAPI(tokenData.symbol, tokenAddress);
             priceCache.set(tokenAddress, { price, timestamp: Date.now() });
             return price;
         } catch (error) {
@@ -373,16 +404,51 @@ export class UniswapV3QuoteCalculator {
         }
     }
 
-    private async getTokenPriceFromExternalAPI(symbol: string): Promise<number> {
-        if (symbol.toLowerCase() === this.chainConfig.wrappedTokenSymbol.toLowerCase()) {
-            const p = (await getTokenPrice(this.chainConfig.nativeTokenSymbol.toUpperCase())).data?.price
-            if (p) return p
+    private async getTokenPriceFromExternalAPI(symbol: string, tokenAddress?: string): Promise<number> {
+        const nativeSymbol = this.chainConfig?.nativeTokenSymbol?.toUpperCase() || "ETH";
+        const wrappedSymbol = this.chainConfig?.wrappedTokenSymbol?.toUpperCase() || "WETH";
+
+        if (symbol.toUpperCase() === wrappedSymbol || symbol.toUpperCase() === nativeSymbol) {
+            const p = (await getTokenPrice(nativeSymbol)).data?.price;
+            if (p) return p;
         }
-        const response = await fetch(
-            `https://min-api.cryptocompare.com/data/price?fsym=${symbol.toUpperCase()}&tsyms=USD`
-        );
-        const data = await response.json();
-        return data["USD"]
+
+        // Try getting price by symbol from DeFiLlama
+        try {
+            const res = await getTokenPrice(symbol);
+            if (res.success && res.data?.price) {
+                return res.data.price;
+            }
+        } catch {}
+
+        // Fallback: Query by token contract address if provided
+        if (tokenAddress) {
+            const network = (this.chainConfig?.network || "base").toLowerCase();
+            try {
+                const llamaRes = await fetch(`https://coins.llama.fi/prices/current/${network}:${tokenAddress.toLowerCase()}`, { signal: AbortSignal.timeout(8_000) });
+                if (llamaRes.ok) {
+                    const data = (await llamaRes.json()) as any;
+                    const coin = data?.coins?.[`${network}:${tokenAddress.toLowerCase()}`];
+                    if (coin && typeof coin.price === "number") {
+                        return coin.price;
+                    }
+                }
+            } catch {}
+
+            try {
+                const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { signal: AbortSignal.timeout(8_000) });
+                if (dexRes.ok) {
+                    const dexData = (await dexRes.json()) as any;
+                    const pair = dexData?.pairs?.[0];
+                    if (pair && pair.priceUsd) {
+                        const price = parseFloat(pair.priceUsd);
+                        if (!isNaN(price)) return price;
+                    }
+                }
+            } catch {}
+        }
+
+        return 0;
     }
 
     private async getTokenUsdPriceFromPoolUsingStableCoin(tokenAddress: string): Promise<number> {
@@ -440,12 +506,28 @@ export class UniswapV3QuoteCalculator {
         }
 
 
-        const wrappedTokenPrice = await get0gPrice()
+        // Dynamic chain-aware native token price (ETH on Base, 0G on 0G, BNB on BSC, etc.)
+        const nativeSymbol = this.chainConfig?.nativeTokenSymbol?.toUpperCase() || "ETH";
+        let wrappedTokenPrice: number | undefined;
 
-        if (!wrappedTokenPrice.data?.price) {
-            throw new Error("Unable to fetch wrapped token price")
+        try {
+            const nativePriceResult = await getTokenPrice(nativeSymbol);
+            if (nativePriceResult.success && nativePriceResult.data?.price) {
+                wrappedTokenPrice = nativePriceResult.data.price;
+            }
+        } catch {}
+
+        if (!wrappedTokenPrice) {
+            wrappedTokenPrice = await this.getTokenPriceFromExternalAPI(
+                this.chainConfig?.wrappedTokenSymbol || "WETH",
+                this.config.wrappedNativeTokenAddress
+            );
         }
-        return price * wrappedTokenPrice.data?.price
+
+        if (!wrappedTokenPrice) {
+            throw new Error(`Unable to fetch native/wrapped token price for ${nativeSymbol}`);
+        }
+        return price * wrappedTokenPrice;
     }
     private async getTokenUsdPriceFromPool(tokenAddress: string): Promise<number> {
         // Fallback to wrapped native token
@@ -476,11 +558,11 @@ export class UniswapV3QuoteCalculator {
 
 
         const [slot0, liquidity, token0Address, token1Address, fee] = await Promise.all([
-            pool.slot0(),
-            pool.liquidity(),
-            pool.token0(),
-            pool.token1(),
-            pool.fee(),
+            this.retryWithBackoff(() => pool.slot0()),
+            this.retryWithBackoff(() => pool.liquidity()),
+            this.retryWithBackoff(() => pool.token0()),
+            this.retryWithBackoff(() => pool.token1()),
+            this.retryWithBackoff(() => pool.fee()),
         ]);
 
         // console.log('token0Address: ', token0Address);
@@ -563,57 +645,42 @@ export class UniswapV3QuoteCalculator {
             tokenB = this.config.wrappedNativeTokenAddress;
         }
         if (tokenA.toLowerCase() === tokenB.toLowerCase()) {
-            throw new Error("TokenA and TokenB cannot be the same");
+            return [];
         }
 
-        const foundPools = await Promise.all(
-            feeTiers.map(async (fee) => {
-                try {
-                    const poolAddress: string = await factory.getPool(tokenA, tokenB, fee);
+        console.log(`findAllPools ${this.config.name} ${tokenA}/${tokenB}`);
+        const foundPools: (PoolInfo & { poolData: PoolData })[] = [];
+        for (const fee of feeTiers) {
+            try {
+                const poolAddress: string = await this.retryWithBackoff(() => factory.getPool(tokenA, tokenB, fee));
 
-                    // 🧠 Early skip for zero address
-                    if (
-                        !poolAddress ||
-                        poolAddress.toLowerCase() === "0x0000000000000000000000000000000000000000"
-                    ) {
-                        return null;
-                    }
-
-                    const pool = new Contract(poolAddress, POOL_ABI, this.provider);
-
-                    // ⚠️ If this throws for non-existent pools, it'll be caught below
-                    const liquidityRaw = await pool.liquidity();
-                    const liquidity = new Decimal(liquidityRaw.toString());
-
-                    if (!liquidity) {
-                        console.warn(`Liquidity fetch failed for pool at ${poolAddress} on DEX {${this.config.name}}`);
-                        return null;
-                    }
-
-                    if (liquidity.lte(0)) return null;
-
-                    // only now fetch poolData since it's a heavier call
-                    const poolData = await this.getPoolData(poolAddress);
-
-                    const res = {
-                        pool,
-                        fee,
-                        liquidity,
-                        address: poolAddress,
-                        poolData,
-                    };
-
-
-                    return res;
-                } catch (error) {
-                    console.warn(`Error checking pool for fee ${fee} on DEX {${this.config.name}}`);
-                    return null;
+                if (
+                    !poolAddress ||
+                    poolAddress.toLowerCase() === "0x0000000000000000000000000000000000000000"
+                ) {
+                    continue;
                 }
-            })
-        );
 
-        const clean = foundPools.filter((p): p is PoolInfo & { poolData: PoolData } => p !== null);
-        return clean;
+                const pool = new Contract(poolAddress, POOL_ABI, this.provider);
+                const liquidityRaw = await this.retryWithBackoff(() => pool.liquidity());
+                const liquidity = new Decimal(liquidityRaw.toString());
+
+                if (!liquidity || liquidity.lte(0)) continue;
+
+                const poolData = await this.getPoolData(poolAddress);
+                foundPools.push({
+                    pool,
+                    fee,
+                    liquidity,
+                    address: poolAddress,
+                    poolData,
+                });
+            } catch (error) {
+                console.warn(`Error checking pool for fee ${fee} on DEX {${this.config.name}}`, error);
+            }
+        }
+
+        return foundPools;
     }
 
 
@@ -835,7 +902,7 @@ export class UniswapV3QuoteCalculator {
         console.log('latestBlock: ', latestBlock);
         const startBlock = parseInt(fromBlockHeight);
         console.log('fromBlockHeight: ', fromBlockHeight);
-        const BATCH_SIZE = 9999; // Stay safely under 10k block limit
+        const BATCH_SIZE = Number(process.env.BATCH_SIZE) || 1999; // Standard 2000-block RPC limit
 
         console.log(
             `Scanning from block ${startBlock} to ${latestBlock} (${latestBlock - startBlock} blocks)`

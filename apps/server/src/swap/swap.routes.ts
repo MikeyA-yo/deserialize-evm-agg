@@ -18,6 +18,7 @@ import {
     tokenListController,
     tokenListWithDetailsController,
     tokenPriceController,
+    tokenSearchController,
     // tokenListController,
     // tokenPriceController,
     // unWrapEthTxController,
@@ -42,6 +43,10 @@ swapRouter.get("/tokenList", tokenListController);
 swapRouter.get("/tokenListWithDetails", tokenListWithDetailsController);
 swapRouter.get("/tokenPrice/:tokenAddress", tokenPriceController);
 swapRouter.get("/tokenDetails/:tokenAddress", tokenDetailsController);
+swapRouter.get("/tokens/search", tokenSearchController);
+swapRouter.get("/tokens/search/:query", tokenSearchController);
+swapRouter.get("/tokenSearch", tokenSearchController);
+swapRouter.get("/tokenSearch/:query", tokenSearchController);
 
 
 swapRouter.post("/:chain/quote", swapQuoteController);
@@ -50,6 +55,10 @@ swapRouter.get("/:chain/tokenList", tokenListController);
 swapRouter.get("/:chain/tokenListWithDetails", tokenListWithDetailsController);
 swapRouter.get("/:chain/tokenPrice/:tokenAddress", tokenPriceController);
 swapRouter.get("/:chain/tokenDetails/:tokenAddress", tokenDetailsController);
+swapRouter.get("/:chain/tokens/search", tokenSearchController);
+swapRouter.get("/:chain/tokens/search/:query", tokenSearchController);
+swapRouter.get("/:chain/tokenSearch", tokenSearchController);
+swapRouter.get("/:chain/tokenSearch/:query", tokenSearchController);
 
 
 

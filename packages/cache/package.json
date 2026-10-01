@@ -7,7 +7,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "sudo rm -r dist ;  tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@deserialize-evm-agg/graph": "1.0.0"

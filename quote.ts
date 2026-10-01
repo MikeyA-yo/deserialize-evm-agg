@@ -24,24 +24,13 @@ const testQuote = async () => {
         }
     })
     console.log('finalRoutes: ', finalRoutes);
-    // const toBiMap = await route.RouteJsonRpcProvider.getTokenBiMap()
-    // const tokenAIndex = toBiMap.tokenBiMap.getByValue(fromTokenString.toLowerCase());
-    // console.log('tokenAIndex: ', tokenAIndex);
-    // const tokenBIndex = toBiMap.tokenBiMap.getByValue(toTokenString.toLowerCase());
-    // console.log('tokenBIndex: ', tokenBIndex);
-    // const graph = await route.RouteJsonRpcProvider.getGraph();
-    // console.log('graph:', graph);
-    // const edges = graph[tokenBIndex!];
-    // console.log('edges: ', edges);
-    // console.log('edges: ', edges.filter(edge => (edge.edgeData as any).pool.token0.address.toLowerCase() === toTokenString.toLowerCase() || (edge.edgeData as any).pool.token1.address.toLowerCase() === toTokenString.toLowerCase()));
-    // console.log('edges: ', edges.length);
-
-
-    return
-
-    const { newGraph } = await route.RouteJsonRpcProvider.findUpdateTokenPairPools(fromTokenString, toTokenString)
-    console.log('graph:', newGraph);
+    console.log('amountOut: ', amountOut.toFixed(0));
 }
 
 testQuote()
+    .then(() => process.exit(0))
+    .catch((error) => {
+        console.error(error);
+        process.exit(1);
+    });
 

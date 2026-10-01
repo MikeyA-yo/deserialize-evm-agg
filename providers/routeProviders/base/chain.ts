@@ -1,9 +1,15 @@
+import path from "path";
+import dotenv from "dotenv";
 import { ChainConfig } from "../UniswapV3Calculator";
-//add base chain export
+
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+
 export const chain: ChainConfig = {
     name: "Base",
     network: "BASE",
-    rpcUrl: "https://base-mainnet.g.alchemy.com/v2/GhfzutibWR1GT8N3aRI_H",
+    get rpcUrl() {
+        return process.env.BASE_RPC_URL || "https://mainnet.base.org";
+    },
     wrappedNativeTokenAddress: "0x4200000000000000000000000000000000000006",
     wrappedTokenSymbol: "WETH",
     nativeTokenAddress: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",

@@ -274,12 +274,13 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
             return cachedData;
         }
 
-        const tokenBiMap = await this.getNewTokenBiMap<T[]>(
-            provider || this.provider
-        );
-
-        this.cache.setDexTokenIndexBiMapCache(this.name, tokenBiMap);
-        return tokenBiMap;
+        // A cache miss must not scan factory logs. That scan belongs to the
+        // pool indexer. Quote requests discover the specific pair they need.
+        return {
+            tokenBiMap: new ArrayBiMap<string>(),
+            data: [],
+            tokenPoolMap: new Map<string, string>(),
+        };
     };
 
     getNewTokenBiMap = async <T>(
@@ -332,31 +333,41 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
         console.log("NEW GRAPH BEFORE", (await this.getNewGraph()).length)
         console.log("NEW GRAPH BEFORE", (await this.getGraph()).length)
 
+        const uniquePairs: [string, string][] = [];
+        const seen = new Set<string>();
+
+        const candidatePairs: [string, string][] = [
+            [tokenA, tokenB],
+            [this.chainConfig.wrappedNativeTokenAddress, tokenB],
+            [this.chainConfig.stableTokenAddress, tokenB],
+            [tokenA, this.chainConfig.wrappedNativeTokenAddress],
+            [tokenA, this.chainConfig.stableTokenAddress]
+        ];
+
+        for (const [a, b] of candidatePairs) {
+            if (!a || !b || a.toLowerCase() === b.toLowerCase()) continue;
+            const key = `${a.toLowerCase()}-${b.toLowerCase()}`;
+            const reverseKey = `${b.toLowerCase()}-${a.toLowerCase()}`;
+            if (!seen.has(key) && !seen.has(reverseKey)) {
+                seen.add(key);
+                uniquePairs.push([a, b]);
+            }
+        }
+
         await Promise.all(this.routeProviders.map(async (RouteProviderClass) => {
             const route = new RouteProviderClass(this.provider, this.cache);
             try {
-                // console.log("fresh newTokenBiMap ", (await route.getTokenBiMap()).tokenBiMap.n);
-                // console.log("fresh newGraph ", (await route.getGraph()).length);
-                // console.log("token Pool Map Before", (await route.getTokenBiMap()).tokenPoolMap.size)
-                const [{ newTokenBiMap, newGraph }] = await Promise.all(
-                    [
-                        await route.findUpdateTokenPairPools(tokenA, tokenB),
-                        await route.findUpdateTokenPairPools(this.chainConfig.wrappedNativeTokenAddress, tokenB),
-                        await route.findUpdateTokenPairPools(this.chainConfig.stableTokenAddress, tokenB),
-                        await route.findUpdateTokenPairPools(tokenA, this.chainConfig.wrappedNativeTokenAddress),
-                        await route.findUpdateTokenPairPools(tokenA, this.chainConfig.stableTokenAddress),
-
-                    ]
-                )
-
-
-                // console.log("token Pool Map After", (await route.getTokenBiMap()).tokenPoolMap.size)
-                // console.log("fresh newTokenBiMap ", newTokenBiMap.n);
-                // console.log("fresh newGraph ", newGraph.length);
+                for (const [a, b] of uniquePairs) {
+                    try {
+                        await route.findUpdateTokenPairPools(a, b);
+                    } catch (err: any) {
+                        // Ignore individual missing pool errors and continue
+                    }
+                }
             } catch (error) {
                 console.error(`Error updating token pair pools for ${route.name}:`, error);
             }
-        }))
+        }));
         // now all the routes have updated their tokenBiMaps and Graph with this new token pair
 
         //we will now force the update of the all route to add this new information to the all route
@@ -825,7 +836,10 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
         // }
 
         const plan: IPath[] = [];
-        for (const route of routePlan) {
+        for (let i = 0; i < routePlan.length; i++) {
+            const route = routePlan[i];
+            const isFirstHop = i === 0;
+            const isLastHop = i === routePlan.length - 1;
             const RouteProviderClass = this.getRouteProviderByDexId(route.dexId as string);
             const dexRoute = new RouteProviderClass(this.provider, this.cache);
             const config = dexRoute.getDexConfig();
@@ -834,26 +848,25 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
             if (!warpedTokenAddress || !nativeTokenAddress) {
                 throw new Error("Dex config must have wrappedNativeTokenAddress and nativeTokenAddress");
             }
+            const replaceIn = isNativeIn && isFirstHop && route.tokenA.toLowerCase() === warpedTokenAddress.toLowerCase();
+            const replaceOut = isNativeOut && isLastHop && route.tokenB.toLowerCase() === warpedTokenAddress.toLowerCase();
             const path: IPath = {
-                factory: config.factoryAddress, // Assuming factory is always ZERO_G for this example
+                factory: config.factoryAddress,
                 poolAddress: route.poolAddress,
-                // tokenIn: route.aToB ? route.tokenA : route.tokenB,
-                tokenIn: isNativeIn ? route.tokenA.toLowerCase() === warpedTokenAddress.toLowerCase() ? nativeTokenAddress : route.tokenA : route.tokenA,
-                // tokenOut: route.aToB ? route.tokenB : route.tokenA,
-                tokenOut: isNativeOut ? route.tokenB.toLowerCase() === warpedTokenAddress.toLowerCase() ? nativeTokenAddress : route.tokenB : route.tokenB,
+                tokenIn: replaceIn ? nativeTokenAddress : route.tokenA,
+                tokenOut: replaceOut ? nativeTokenAddress : route.tokenB,
                 fee: route.fee,
             };
             plan.push(path);
         }
         const paths = plan;
         const slippageMultiplier = new Decimal(1).minus(slippage / 100);
-        const minAmountOut = amountOut.mul(slippageMultiplier)
-        // console.log('minAmountOut: ', minAmountOut);
+        const minAmountOut = amountOut.mul(slippageMultiplier);
+        console.log(`      [TX_BUILD:1/4] Constructing swap path for wallet ${wallet} on ${this.network}...`);
+        console.log(`      [TX_BUILD:2/4] Total hops: ${paths.length}, isNativeIn=${isNativeIn}, isNativeOut=${isNativeOut}`);
+        console.log(`      [TX_BUILD:3/4] amountInRaw=${amountFormattedToTokenDecimal.toFixed(0)}, expectedOut=${amountOut.toFixed(0)}, minAmountOut=${minAmountOut.toFixed(0)} (slippage: ${slippage}%)`);
+        console.log(`      [TX_BUILD:4/4] Invoking createSwapTX with swapProxy and adapter tracker...`);
 
-        // console.log('amountIn: ', amountIn);
-        // console.log('amountIn.toFixed(0),: ', amountIn.toFixed(0),);
-        // console.log('minAmountOut.toFixed(0): ', minAmountOut.toFixed(0));
-        // console.log('paths: ', paths);
         const txs = await createSwapTX(
             {
                 path: paths,
@@ -867,8 +880,9 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
             from: wallet,
             to: tx.to,
             data: tx.data,
-            value: tx.value, // make sure this is BigNumberish (string, number, or BigNumber)
+            value: tx.value,
         }));
+        console.log(`      [TX_BUILD:SUCCESS] createSwapTX returned ${transactions.length} transaction(s)`);
         return { transactions };
 
 

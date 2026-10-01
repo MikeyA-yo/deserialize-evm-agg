@@ -8,5 +8,6 @@ packages/cache/dist
 packages/graph/dist
 packages/swap-contract-sdk/dist
 apps/server/dist
-
-
+Deserialize_PRD.md
+issues.md
+./issues.md
