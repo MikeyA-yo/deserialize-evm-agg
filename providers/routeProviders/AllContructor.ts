@@ -328,11 +328,6 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
     };
 
     findUpdateTokenPairPools = async (tokenA: string, tokenB: string) => {
-        console.log("NEW TOKEN BIMAP BEFORE", (await this.getNewTokenBiMap()).tokenBiMap.n)
-        console.log("TOKEN BIMAP BEFORE", (await this.getTokenBiMap()).tokenBiMap.n)
-        console.log("NEW GRAPH BEFORE", (await this.getNewGraph()).length)
-        console.log("NEW GRAPH BEFORE", (await this.getGraph()).length)
-
         const uniquePairs: [string, string][] = [];
         const seen = new Set<string>();
 

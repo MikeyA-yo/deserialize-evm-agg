@@ -119,13 +119,13 @@ export class BaseV3Route<DexIdTypes> implements IRoute<PoolData, DexIdTypes> {
         if (cachedData) {
             return cachedData as TokenBiMap<PoolData>;
         }
-        console.log("No cached data found, getting a new one...");
-        const tokenBiMap = await this.getNewTokenBiMap<PoolData>(
-            provider || this.provider
-        );
-        this.cache.setDexTokenIndexBiMapCache(this.name, tokenBiMap);
-
-        return tokenBiMap;
+        // A cache miss must not scan factory logs. That scan belongs to the
+        // pool indexer. Quote requests discover the specific pair they need.
+        return {
+            tokenBiMap: new ArrayBiMap<string>(),
+            data: [],
+            tokenPoolMap: new Map<string, string>(),
+        };
     }
 
 
