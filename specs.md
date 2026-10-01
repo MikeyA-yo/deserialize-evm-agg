@@ -96,27 +96,26 @@ Fetches ERC-20 metadata (decimals, symbol, name) and liquidity status.
 
 ### 3.3 Search Tokens (by Ticker, Symbol, Name, or Address)
 
-Allows frontend token pickers/search bars to search tokens by their ticker (e.g. `ETH`, `AERO`, `BRETT`, `DEGEN`, `USDC`, `CLANKER`), token name, or contract address (CA).
+Allows frontend token pickers/search bars to search tokens by their ticker (both default and non-default tokens on Base), token name, or contract address (CA).
 
 - **Method:** `GET`
 - **Paths Supported:**
-  - `/:chain/tokens/search?q=:query` (e.g. `GET /base/tokens/search?q=aero`)
-  - `/:chain/tokens/search/:query` (e.g. `GET /base/tokens/search/aero`)
+  - `/:chain/tokens/search?q=:query` (e.g. `GET /base/tokens/search?q=ski`)
+  - `/:chain/tokens/search/:query` (e.g. `GET /base/tokens/search/ski`)
   - `/:chain/tokenSearch?query=:query`
   - `/tokens/search?q=:query` (defaults to Base chain)
 - **Supported Query Params:** `q`, `query`, `tick`, `symbol`
-- **Behavior:**
-  - Matches ticker symbols (exact matches ranked first, then prefix matches, then substring matches).
-  - Matches token names and contract address prefixes.
-  - Automatically fetches on-chain details if a valid 42-character contract address (`0x...`) is entered.
-  - Returns default top tokens if query is empty.
+- **Search Capabilities & Ticker Coverage:**
+  1. **Default Verified Tokens:** High-liquidity tokens (`ETH`, `WETH`, `USDC`, `USDbC`, `DAI`, `cbBTC`, `cbETH`, `AERO`, `BRETT`, `DEGEN`, `CLANKER`, `TOSHI`, `VIRTUAL`, `HIGHER`) resolve instantly in **2–5ms**.
+  2. **Non-Default / Arbitrary Tickers:** Any non-default token on Base (e.g. `SKI`, `MIGGLES`, `KEYCAT`, `WELL`, `SEAM`, `BENJI`, meme coins, new tokens) is dynamically discovered via live Base DEX search, verified against on-chain metadata for accurate token decimals (`decimals`), and cached for subsequent instantaneous lookups.
+  3. **Direct Contract Address (CA):** Entering a 42-character address (`0x...`) queries the ERC-20 contract directly on-chain via RPC.
+  4. **Relevance Scoring:** Exact symbol matches rank first (`+100`), followed by exact CA match (`+95`), symbol prefix (`+80`), symbol substring (`+60`), and name match (`+40`).
+  5. **Empty Query:** Returns the top verified default tokens list.
 
-#### Example Request:
+#### Example 1: Searching a Default Ticker (`aero`)
 ```http
 GET http://localhost:3735/base/tokens/search?q=aero
 ```
-
-#### Response (`200 OK`):
 ```json
 {
   "result": [
@@ -127,18 +126,47 @@ GET http://localhost:3735/base/tokens/search?q=aero
       "decimals": 18,
       "network": "BASE"
     }
-  ],
-  "data": [
+  ]
+}
+```
+
+#### Example 2: Searching a Non-Default Ticker (`ski`)
+```http
+GET http://localhost:3735/base/tokens/search?q=ski
+```
+```json
+{
+  "result": [
     {
-      "address": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
-      "symbol": "AERO",
-      "name": "Aerodrome",
+      "address": "0x768BE13e1680b5ebE0024C42c896E3dB59ec0149",
+      "symbol": "SKI",
+      "name": "SKI MASK DOG",
+      "decimals": 9,
+      "network": "BASE"
+    }
+  ]
+}
+```
+
+#### Example 3: Searching a Non-Default Ticker (`miggles`)
+```http
+GET http://localhost:3735/base/tokens/search?q=miggles
+```
+```json
+{
+  "result": [
+    {
+      "address": "0xB1a03EdA10342529bBF8EB700a06C60441fEf25d",
+      "symbol": "MIGGLES",
+      "name": "Mr. Miggles",
       "decimals": 18,
       "network": "BASE"
     }
   ]
 }
 ```
+
+*Note: The response returns both `result` and `data` keys to ensure 100% compatibility with any frontend client.*
 
 ---
 

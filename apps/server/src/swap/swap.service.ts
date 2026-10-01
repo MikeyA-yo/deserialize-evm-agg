@@ -332,6 +332,85 @@ const KNOWN_0G_TOKENS: SearchTokenResult[] = [
     },
 ];
 
+const DYNAMIC_BASE_TOKEN_CACHE = new Map<string, SearchTokenResult>();
+
+async function searchExternalBaseTokens(query: string, provider: JsonRpcProvider): Promise<SearchTokenResult[]> {
+    const q = query.trim().toLowerCase();
+    if (!q || q.startsWith("0x")) return [];
+
+    try {
+        const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query.trim())}`;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeout);
+
+        if (!res.ok) return [];
+
+        const data: any = await res.json();
+        const pairs: any[] = data?.pairs || [];
+        const basePairs = pairs.filter((p) => p?.chainId === "base");
+
+        const candidates: any[] = [];
+        const seenAddresses = new Set<string>();
+
+        for (const pair of basePairs) {
+            for (const candidate of [pair?.baseToken, pair?.quoteToken]) {
+                const addr = candidate?.address?.toLowerCase();
+                if (!addr || addr === "0x0000000000000000000000000000000000000000" || seenAddresses.has(addr)) continue;
+
+                const sym = (candidate?.symbol || "").toLowerCase();
+                const name = (candidate?.name || "").toLowerCase();
+
+                if (sym.includes(q) || name.includes(q)) {
+                    seenAddresses.add(addr);
+                    candidates.push(candidate);
+                    if (candidates.length >= 6) break;
+                }
+            }
+            if (candidates.length >= 6) break;
+        }
+
+        const resolveCandidate = async (candidate: any): Promise<SearchTokenResult> => {
+            const addr = candidate.address.toLowerCase();
+            if (DYNAMIC_BASE_TOKEN_CACHE.has(addr)) {
+                return DYNAMIC_BASE_TOKEN_CACHE.get(addr)!;
+            }
+
+            let decimals = 18;
+            try {
+                const onchainPromise = getTokenDetails(candidate.address, provider);
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error("RPC timeout")), 1500)
+                );
+                const onchain: any = await Promise.race([onchainPromise, timeoutPromise]);
+                if (onchain && typeof onchain.decimals === "number") {
+                    decimals = onchain.decimals;
+                }
+            } catch {
+                // fallback to 18
+            }
+
+            const tokenItem: SearchTokenResult = {
+                address: candidate.address,
+                symbol: candidate.symbol,
+                name: candidate.name,
+                decimals,
+                network: "BASE",
+            };
+
+            DYNAMIC_BASE_TOKEN_CACHE.set(addr, tokenItem);
+            return tokenItem;
+        };
+
+        return await Promise.all(candidates.map(resolveCandidate));
+    } catch (err: any) {
+        console.warn("  [TOKEN_SEARCH:WARN] Dynamic token discovery error:", err?.message);
+        return [];
+    }
+}
+
 export const tokenSearchService = async (
     searchQuery: string | undefined,
     provider: JsonRpcProvider,
@@ -383,6 +462,32 @@ export const tokenSearchService = async (
             }
         } catch (err: any) {
             console.warn(`  [TOKEN_SEARCH:WARN] Could not resolve CA ${searchQuery} on-chain:`, err?.message);
+        }
+    }
+
+    // 4. Dynamic discovery for non-default tickers/symbols on Base
+    if (network === "BASE" && q && !q.startsWith("0x")) {
+        for (const cached of DYNAMIC_BASE_TOKEN_CACHE.values()) {
+            if (!tokenMap.has(cached.address.toLowerCase())) {
+                tokenMap.set(cached.address.toLowerCase(), cached);
+            }
+        }
+
+        const hasExactLocalMatch = Array.from(tokenMap.values()).some(
+            (t) => (t.symbol || "").toLowerCase() === q
+        );
+
+        if (!hasExactLocalMatch) {
+            try {
+                const externalTokens = await searchExternalBaseTokens(searchQuery!, provider);
+                for (const t of externalTokens) {
+                    if (!tokenMap.has(t.address.toLowerCase())) {
+                        tokenMap.set(t.address.toLowerCase(), t);
+                    }
+                }
+            } catch (err: any) {
+                console.warn("  [TOKEN_SEARCH:WARN] External ticker discovery failed:", err?.message);
+            }
         }
     }
 
