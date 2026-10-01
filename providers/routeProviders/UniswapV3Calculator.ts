@@ -9,7 +9,7 @@ import { ethers, Contract, JsonRpcProvider } from "ethers";
 
 export const createJsonRpcProvider = (rpcUrl: string, chainId: number) => {
     const request = new ethers.FetchRequest(rpcUrl);
-    request.timeout = 10_000;
+    request.timeout = 25_000;
     return new ethers.JsonRpcProvider(request, chainId, {
         staticNetwork: true,
         batchMaxCount: 1,
