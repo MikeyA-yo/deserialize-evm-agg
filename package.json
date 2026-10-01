@@ -58,6 +58,5 @@
     "ch": "git pull && yarn run build && yarn run restart:all",
     "chl": "yarn run ch && yarn run log:all",
     "dev:all": "concurrently \"yarn run dev:start:server\""
-  },
-
+  }
 }
