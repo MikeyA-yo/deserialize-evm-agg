@@ -324,7 +324,7 @@ const fullRebuildCache = async (
         for (const RouteProviderClass of allRoute.routeProviders) {
             const route = new RouteProviderClass(provider, cache);
             const config = route.getDexConfig()
-            await cache.setLastBlockFetched(route.name, config.fromBlock); // Reset block tracking
+            await cache.setLastBlockFetched(route.name, Number(config.fromBlock || 0)); // Reset block tracking
         }
 
         // Rebuild from scratch
