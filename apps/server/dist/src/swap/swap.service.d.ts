@@ -18,7 +18,7 @@ export declare const swapQuoteService: (params: SwapQuoteRequestType, provider: 
         dexId: AllDexIdTypes;
     }[];
     dexId: string;
-    dexFactory: any;
+    dexFactory: string;
     isNativeIn: boolean;
     isNativeOut: boolean;
 }>;
@@ -31,3 +31,11 @@ export declare const tokenList: (provider: JsonRpcProvider, network: NetworkType
 export declare const tokenListWithDetailsService: (provider: JsonRpcProvider, network: NetworkType) => Promise<{}[]>;
 export declare const getTokenPriceService: (tokenAddress: string, provider: JsonRpcProvider, network: NetworkType) => Promise<number | null>;
 export declare const getTokenDetailsService: (tokenAddress: string, provider: JsonRpcProvider, network: NetworkType) => Promise<{}>;
+export interface SearchTokenResult {
+    address: string;
+    symbol: string;
+    name: string;
+    decimals: number;
+    network?: string;
+}
+export declare const tokenSearchService: (searchQuery: string | undefined, provider: JsonRpcProvider, network: NetworkType) => Promise<SearchTokenResult[]>;

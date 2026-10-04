@@ -3,8 +3,9 @@ export declare const SwapQuoteRequestSchema: z.ZodObject<{
     body: z.ZodObject<{
         tokenA: z.ZodString;
         tokenB: z.ZodString;
-        amountIn: z.ZodEffects<z.ZodString, number, string>;
+        amountIn: z.ZodEffects<z.ZodUnion<[z.ZodString, z.ZodNumber]>, number, string | number>;
         dexId: z.ZodString;
+        chain: z.ZodOptional<z.ZodString>;
         options: z.ZodOptional<z.ZodObject<{
             targetRouteNumber: z.ZodNumber;
         }, "strip", z.ZodTypeAny, {
@@ -20,19 +21,21 @@ export declare const SwapQuoteRequestSchema: z.ZodObject<{
         options?: {
             targetRouteNumber: number;
         } | undefined;
+        chain?: string | undefined;
     }, {
         tokenA: string;
         tokenB: string;
-        amountIn: string;
+        amountIn: string | number;
         dexId: string;
         options?: {
             targetRouteNumber: number;
         } | undefined;
+        chain?: string | undefined;
     }>;
     params: z.ZodOptional<z.ZodObject<{
-        chain: z.ZodDefault<z.ZodString>;
+        chain: z.ZodOptional<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
-        chain: string;
+        chain?: string | undefined;
     }, {
         chain?: string | undefined;
     }>>;
@@ -45,19 +48,21 @@ export declare const SwapQuoteRequestSchema: z.ZodObject<{
         options?: {
             targetRouteNumber: number;
         } | undefined;
+        chain?: string | undefined;
     };
     params?: {
-        chain: string;
+        chain?: string | undefined;
     } | undefined;
 }, {
     body: {
         tokenA: string;
         tokenB: string;
-        amountIn: string;
+        amountIn: string | number;
         dexId: string;
         options?: {
             targetRouteNumber: number;
         } | undefined;
+        chain?: string | undefined;
     };
     params?: {
         chain?: string | undefined;
@@ -67,13 +72,14 @@ export type SwapQuoteRequestType = z.infer<typeof SwapQuoteRequestSchema>["body"
 export declare const SwapRequestSchema: z.ZodObject<{
     body: z.ZodObject<{
         publicKey: z.ZodString;
+        chain: z.ZodOptional<z.ZodString>;
         quote: z.ZodObject<{
             tokenA: z.ZodString;
             tokenB: z.ZodString;
-            amountIn: z.ZodEffects<z.ZodString, number, string>;
-            amountOut: z.ZodEffects<z.ZodString, number, string>;
-            tokenPrice: z.ZodEffects<z.ZodString, number, string>;
-            feeRate: z.ZodOptional<z.ZodEffects<z.ZodString, number, string>>;
+            amountIn: z.ZodEffects<z.ZodUnion<[z.ZodString, z.ZodNumber]>, number, string | number>;
+            amountOut: z.ZodEffects<z.ZodUnion<[z.ZodString, z.ZodNumber]>, number, string | number>;
+            tokenPrice: z.ZodEffects<z.ZodUnion<[z.ZodString, z.ZodNumber]>, number, string | number>;
+            feeRate: z.ZodOptional<z.ZodEffects<z.ZodUnion<[z.ZodString, z.ZodNumber]>, number, string | number>>;
             routePlan: z.ZodArray<z.ZodObject<{
                 tokenA: z.ZodString;
                 tokenB: z.ZodString;
@@ -82,20 +88,21 @@ export declare const SwapRequestSchema: z.ZodObject<{
                 aToB: z.ZodBoolean;
                 dexId: z.ZodString;
             }, "strip", z.ZodTypeAny, {
-                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
+                aToB: boolean;
             }, {
-                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
+                aToB: boolean;
             }>, "many">;
+            dexFactory: z.ZodOptional<z.ZodString>;
             dexId: z.ZodString;
             isNativeIn: z.ZodBoolean;
             isNativeOut: z.ZodBoolean;
@@ -107,34 +114,36 @@ export declare const SwapRequestSchema: z.ZodObject<{
             amountOut: number;
             tokenPrice: number;
             routePlan: {
-                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
+                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
             feeRate?: number | undefined;
+            dexFactory?: string | undefined;
         }, {
             tokenA: string;
             tokenB: string;
-            amountIn: string;
+            amountIn: string | number;
             dexId: string;
-            amountOut: string;
-            tokenPrice: string;
+            amountOut: string | number;
+            tokenPrice: string | number;
             routePlan: {
-                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
+                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
-            feeRate?: string | undefined;
+            feeRate?: string | number | undefined;
+            dexFactory?: string | undefined;
         }>;
         slippage: z.ZodEffects<z.ZodNumber, number, number>;
         partnerFees: z.ZodOptional<z.ZodObject<{
@@ -157,18 +166,20 @@ export declare const SwapRequestSchema: z.ZodObject<{
             amountOut: number;
             tokenPrice: number;
             routePlan: {
-                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
+                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
             feeRate?: number | undefined;
+            dexFactory?: string | undefined;
         };
         slippage: number;
+        chain?: string | undefined;
         partnerFees?: {
             fee: number;
             recipient: string;
@@ -178,32 +189,34 @@ export declare const SwapRequestSchema: z.ZodObject<{
         quote: {
             tokenA: string;
             tokenB: string;
-            amountIn: string;
+            amountIn: string | number;
             dexId: string;
-            amountOut: string;
-            tokenPrice: string;
+            amountOut: string | number;
+            tokenPrice: string | number;
             routePlan: {
-                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
+                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
-            feeRate?: string | undefined;
+            feeRate?: string | number | undefined;
+            dexFactory?: string | undefined;
         };
         slippage: number;
+        chain?: string | undefined;
         partnerFees?: {
             fee: number;
             recipient: string;
         } | undefined;
     }>;
     params: z.ZodOptional<z.ZodObject<{
-        chain: z.ZodDefault<z.ZodString>;
+        chain: z.ZodOptional<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
-        chain: string;
+        chain?: string | undefined;
     }, {
         chain?: string | undefined;
     }>>;
@@ -218,25 +231,27 @@ export declare const SwapRequestSchema: z.ZodObject<{
             amountOut: number;
             tokenPrice: number;
             routePlan: {
-                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
+                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
             feeRate?: number | undefined;
+            dexFactory?: string | undefined;
         };
         slippage: number;
+        chain?: string | undefined;
         partnerFees?: {
             fee: number;
             recipient: string;
         } | undefined;
     };
     params?: {
-        chain: string;
+        chain?: string | undefined;
     } | undefined;
 }, {
     body: {
@@ -244,23 +259,25 @@ export declare const SwapRequestSchema: z.ZodObject<{
         quote: {
             tokenA: string;
             tokenB: string;
-            amountIn: string;
+            amountIn: string | number;
             dexId: string;
-            amountOut: string;
-            tokenPrice: string;
+            amountOut: string | number;
+            tokenPrice: string | number;
             routePlan: {
-                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
+                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
-            feeRate?: string | undefined;
+            feeRate?: string | number | undefined;
+            dexFactory?: string | undefined;
         };
         slippage: number;
+        chain?: string | undefined;
         partnerFees?: {
             fee: number;
             recipient: string;
@@ -317,3 +334,54 @@ export declare const TokenDetailsRequestSchema: z.ZodObject<{
     };
 }>;
 export type TokenDetailsRequestType = z.infer<typeof TokenDetailsRequestSchema>["params"];
+export declare const TokenSearchRequestSchema: z.ZodObject<{
+    params: z.ZodOptional<z.ZodObject<{
+        chain: z.ZodOptional<z.ZodString>;
+        query: z.ZodOptional<z.ZodString>;
+    }, "strip", z.ZodTypeAny, {
+        chain?: string | undefined;
+        query?: string | undefined;
+    }, {
+        chain?: string | undefined;
+        query?: string | undefined;
+    }>>;
+    query: z.ZodOptional<z.ZodObject<{
+        query: z.ZodOptional<z.ZodString>;
+        q: z.ZodOptional<z.ZodString>;
+        tick: z.ZodOptional<z.ZodString>;
+        symbol: z.ZodOptional<z.ZodString>;
+    }, "strip", z.ZodTypeAny, {
+        symbol?: string | undefined;
+        query?: string | undefined;
+        q?: string | undefined;
+        tick?: string | undefined;
+    }, {
+        symbol?: string | undefined;
+        query?: string | undefined;
+        q?: string | undefined;
+        tick?: string | undefined;
+    }>>;
+}, "strip", z.ZodTypeAny, {
+    params?: {
+        chain?: string | undefined;
+        query?: string | undefined;
+    } | undefined;
+    query?: {
+        symbol?: string | undefined;
+        query?: string | undefined;
+        q?: string | undefined;
+        tick?: string | undefined;
+    } | undefined;
+}, {
+    params?: {
+        chain?: string | undefined;
+        query?: string | undefined;
+    } | undefined;
+    query?: {
+        symbol?: string | undefined;
+        query?: string | undefined;
+        q?: string | undefined;
+        tick?: string | undefined;
+    } | undefined;
+}>;
+export type TokenSearchRequestType = z.infer<typeof TokenSearchRequestSchema>;

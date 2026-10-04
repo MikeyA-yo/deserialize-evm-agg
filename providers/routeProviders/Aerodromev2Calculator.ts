@@ -1,804 +1,597 @@
-// /**
-//  * Aerodrome V3 Quote Calculator Extension
-//  * 
-//  * Extends the UniswapV3QuoteCalculator to support Aerodrome V3 DEX
-//  * Aerodrome V3 uses Uniswap V3's core logic with some modifications
-//  */
-
-// import { UniswapV3QuoteCalculator, DexConfig, ChainConfig, PoolCreatedEvent, PoolInfo, PoolData, QuoteResult } from "./UniswapV3Calculator";
-// import { Contract, JsonRpcProvider } from "ethers";
-// import { NetworkType } from "./constants";
-// import Decimal from "decimal.js";
-
-// // ==================== AERODROME V3 ABI DEFINITIONS ====================
-
-// /**
-//  * Aerodrome V3 Factory ABI
-//  * Similar to Uniswap V3 but with Aerodrome-specific implementations
-//  */
-// export const AERODROME_V3_FACTORY_ABI = [
-//     {
-//         inputs: [
-//             { internalType: "address", name: "tokenA", type: "address" },
-//             { internalType: "address", name: "tokenB", type: "address" },
-//             { internalType: "int24", name: "tickSpacing", type: "int24" }
-//         ],
-//         name: "getPool",
-//         outputs: [{ internalType: "address", name: "pool", type: "address" }],
-//         stateMutability: "view",
-//         type: "function",
-//     },
-//     {
-//         anonymous: false,
-//         inputs: [
-//             { indexed: true, internalType: "address", name: "token0", type: "address" },
-//             { indexed: true, internalType: "address", name: "token1", type: "address" },
-//             { indexed: true, internalType: "int24", name: "tickSpacing", type: "int24" },
-//             { indexed: false, internalType: "address", name: "pool", type: "address" }
-//         ],
-//         name: "PoolCreated",
-//         type: "event",
-//     },
-// ] as const;
-
-
-// export const AERODROME_VPOOL_FACTORY_ABI = [{
-//     "inputs": [
-//         {
-//             "internalType": "address",
-//             "name": "tokenA",
-//             "type": "address"
-//         },
-//         {
-//             "internalType": "address",
-//             "name": "tokenB",
-//             "type": "address"
-//         },
-//         {
-//             "internalType": "bool",
-//             "name": "stable",
-//             "type": "bool"
-//         }
-//     ],
-//     "name": "getPool",
-//     "outputs": [
-//         {
-//             "internalType": "address",
-//             "name": "",
-//             "type": "address"
-//         }
-//     ],
-//     "stateMutability": "view",
-//     "type": "function"
-// }]
-
-// export const AERODROME_VPOOL_ABI = [{
-//     "inputs": [],
-//     "name": "getReserves",
-//     "outputs": [
-//         {
-//             "internalType": "uint256",
-//             "name": "_reserve0",
-//             "type": "uint256"
-//         },
-//         {
-//             "internalType": "uint256",
-//             "name": "_reserve1",
-//             "type": "uint256"
-//         },
-//         {
-//             "internalType": "uint256",
-//             "name": "_blockTimestampLast",
-//             "type": "uint256"
-//         }
-//     ],
-//     "stateMutability": "view",
-//     "type": "function"
-// },
-// {
-//     "inputs": [],
-//     "name": "token0",
-//     "outputs": [
-//         {
-//             "internalType": "address",
-//             "name": "",
-//             "type": "address"
-//         }
-//     ],
-//     "stateMutability": "view",
-//     "type": "function"
-// },
-// {
-//     "inputs": [],
-//     "name": "token1",
-//     "outputs": [
-//         {
-//             "internalType": "address",
-//             "name": "",
-//             "type": "address"
-//         }
-//     ],
-//     "stateMutability": "view",
-//     "type": "function"
-// },]
-
-
-// /**
-//  * Aerodrome V3 Pool ABI
-//  * Inherits from Uniswap V3 with additional features
-//  */
-// export const AERODROME_V3_POOL_ABI = [
-//     {
-//         inputs: [],
-//         name: "liquidity",
-//         outputs: [{ internalType: "uint128", name: "", type: "uint128" }],
-//         stateMutability: "view",
-//         type: "function",
-//     },
-//     {
-//         inputs: [],
-//         name: "slot0",
-//         outputs: [
-//             { internalType: "uint160", name: "sqrtPriceX96", type: "uint160" },
-//             { internalType: "int24", name: "tick", type: "int24" },
-//             { internalType: "uint16", name: "observationIndex", type: "uint16" },
-//             { internalType: "uint16", name: "observationCardinality", type: "uint16" },
-//             { internalType: "uint16", name: "observationCardinalityNext", type: "uint16" },
-//             { internalType: "bool", name: "unlocked", type: "bool" }
-//         ],
-//         stateMutability: "view",
-//         type: "function",
-//     },
-//     {
-//         inputs: [],
-//         name: "token0",
-//         outputs: [{ internalType: "address", name: "", type: "address" }],
-//         stateMutability: "view",
-//         type: "function",
-//     },
-//     {
-//         inputs: [],
-//         name: "token1",
-//         outputs: [{ internalType: "address", name: "", type: "address" }],
-//         stateMutability: "view",
-//         type: "function",
-//     },
-//     {
-//         inputs: [],
-//         name: "tickSpacing",
-//         outputs: [{ internalType: "int24", name: "", type: "int24" }],
-//         stateMutability: "view",
-//         type: "function",
-//     },
-//     {
-//         inputs: [],
-//         name: "fee",
-//         outputs: [{ internalType: "uint24", name: "", type: "uint24" }],
-//         stateMutability: "view",
-//         type: "function",
-//     },
-// ] as const;
-
-// /**
-//  * Aerodrome V3 Quoter ABI
-//  */
-// export const AERODROME_V3_QUOTER_ABI = [
-//     {
-//         "inputs": [
-//             {
-//                 "components": [
-//                     {
-//                         "internalType": "address",
-//                         "name": "tokenIn",
-//                         "type": "address"
-//                     },
-//                     {
-//                         "internalType": "address",
-//                         "name": "tokenOut",
-//                         "type": "address"
-//                     },
-//                     {
-//                         "internalType": "uint256",
-//                         "name": "amountIn",
-//                         "type": "uint256"
-//                     },
-//                     {
-//                         "internalType": "int24",
-//                         "name": "tickSpacing",
-//                         "type": "int24"
-//                     },
-//                     {
-//                         "internalType": "uint160",
-//                         "name": "sqrtPriceLimitX96",
-//                         "type": "uint160"
-//                     }
-//                 ],
-//                 "internalType": "struct IQuoterV2.QuoteExactInputSingleParams",
-//                 "name": "params",
-//                 "type": "tuple"
-//             }
-//         ],
-//         "name": "quoteExactInputSingle",
-//         "outputs": [
-//             {
-//                 "internalType": "uint256",
-//                 "name": "amountOut",
-//                 "type": "uint256"
-//             },
-//             {
-//                 "internalType": "uint160",
-//                 "name": "sqrtPriceX96After",
-//                 "type": "uint160"
-//             },
-//             {
-//                 "internalType": "uint32",
-//                 "name": "initializedTicksCrossed",
-//                 "type": "uint32"
-//             },
-//             {
-//                 "internalType": "uint256",
-//                 "name": "gasEstimate",
-//                 "type": "uint256"
-//             }
-//         ],
-//         "stateMutability": "nonpayable",
-//         "type": "function"
-//     },
-// ] as const;
-
-// // ==================== AERODROME V3 CONSTANTS ====================
-
-// /**
-//  * Aerodrome V3 uses tick spacing instead of fee tiers
-//  * Common tick spacings:
-//  * - 1: 0.01% fee (lowest volatility pairs)
-//  * - 50: 0.05% fee
-//  * - 100: 0.30% fee (most common)
-//  * - 200: 1.00% fee (exotic pairs)
-//  */
-// export const AERODROME_TICK_SPACINGS = [1, 50, 100, 200];
-
-// const AERODROME_VPOOL_FACTORY = "0x420DD381b31aEf6683db6B902084cB0FFECe40Da"
-
-// /**
-//  * Fee calculation from tick spacing
-//  * Aerodrome uses: fee = tickSpacing * 100
-//  */
-// export const calculateFeeFromTickSpacing = (tickSpacing: number): number => {
-//     return tickSpacing * 100;
-// };
-
-// // ==================== AERODROME V3 NETWORK CONFIGS ====================
-
-
-
-// // ==================== AERODROME V3 QUOTE CALCULATOR ====================
-
-// export class AerodromeV3QuoteCalculator extends UniswapV3QuoteCalculator {
-//     private tickSpacings: number[];
-
-//     constructor(
-//         config: DexConfig,
-//         chainConfig: ChainConfig,
-//         provider?: JsonRpcProvider,
-//         tickSpacings: number[] = AERODROME_TICK_SPACINGS
-//     ) {
-//         // Use provided provider or create a new one
-//         const rpcProvider = provider || new JsonRpcProvider(chainConfig.rpcUrl);
-
-//         super(config, chainConfig, rpcProvider);
-//         this.tickSpacings = tickSpacings;
-//     }
-
-//     /**
-//      * Override findBestPool to use tick spacings instead of fee tiers
-//      */
-//     public async findBestPool(tokenA: string, tokenB: string) {
-//         if (tokenA.toLowerCase() === this.config.nativeTokenAddress.toLowerCase()) {
-//             tokenA = this.config.wrappedNativeTokenAddress;
-//         }
-//         if (tokenB.toLowerCase() === this.config.nativeTokenAddress.toLowerCase()) {
-//             tokenB = this.config.wrappedNativeTokenAddress;
-//         }
-//         if (tokenA.toLowerCase() === tokenB.toLowerCase()) {
-//             throw new Error("TokenA and TokenB cannot be the same");
-//         }
-//         const { Contract } = await import("ethers");
-//         const factory = new Contract(
-//             this.config.factoryAddress,
-//             AERODROME_V3_FACTORY_ABI,
-//             this.provider
-//         );
-
-//         let bestPool: any = null;
-
-//         for (const tickSpacing of this.tickSpacings) {
-//             try {
-//                 const poolAddress: string = await factory.getPool(tokenA, tokenB, tickSpacing);
-
-//                 if (poolAddress === "0x0000000000000000000000000000000000000000") {
-//                     continue;
-//                 }
-
-//                 const pool = new Contract(poolAddress, AERODROME_V3_POOL_ABI, this.provider);
-//                 const { Decimal } = await import("decimal.js");
-//                 const liquidity = new Decimal((await pool.reserve0()).toString());
-
-//                 if (liquidity.gt(0) && (!bestPool || liquidity.gt(bestPool.liquidity))) {
-//                     const fee = calculateFeeFromTickSpacing(tickSpacing);
-//                     bestPool = {
-//                         pool,
-//                         fee,
-//                         liquidity,
-//                         address: poolAddress,
-//                     };
-//                 }
-//             } catch (error) {
-//                 console.warn(`Error checking pool for tick spacing ${tickSpacing}:`, error);
-//             }
-//         }
-//         //now to check the vPools for aerodrome
-//         if (!bestPool) {
-//             const vFactory = new Contract(AERODROME_VPOOL_FACTORY, AERODROME_VPOOL_FACTORY_ABI, this.provider)
-//             const poolAddress = await vFactory.getPool(tokenA, tokenB, false)
-
-
-//             console.log('poolAddress: ', poolAddress);
-//             if (poolAddress === "0x0000000000000000000000000000000000000000") {
-//                 throw new Error("still no pools on the vPools");
-//             }
-//             const pool = new Contract(poolAddress, AERODROME_V3_POOL_ABI, this.provider);
-//             console.log('pool: ', pool);
-//             const { Decimal } = await import("decimal.js");
-//             const reserve0 = new Decimal((await pool.reserve0()).toString());
-//             const reserve1 = new Decimal((await pool.reserve1()).toString());
-
-
-//             const fee = pool.fee
-//             bestPool = {
-//                 pool,
-//                 fee,
-//                 liquidity: `${reserve0}:${reserve1}`,
-//                 address: poolAddress,
-//             };
-
-
-
-
-//         }
-
-
-
-//         if (!bestPool) {
-//             throw new Error(`No viable Aerodrome pool found for token pair ${tokenA}/${tokenB}`);
-//         }
-
-//         const poolData = await this.getPoolData(bestPool.address);
-//         return { ...bestPool, poolData };
-//     }
-//     public async findAllVPools(
-//         tokenA: string,
-//         tokenB: string,
-//         feeTiers: number[]
-//     ): Promise<(PoolInfo & { poolData: PoolData })[]> {
-//         const factory = new Contract(AERODROME_VPOOL_FACTORY, AERODROME_VPOOL_FACTORY_ABI, this.provider);
-
-//         // Normalize wrapped/native
-//         if (tokenA.toLowerCase() === this.config.nativeTokenAddress.toLowerCase()) {
-//             tokenA = this.config.wrappedNativeTokenAddress;
-//         }
-//         if (tokenB.toLowerCase() === this.config.nativeTokenAddress.toLowerCase()) {
-//             tokenB = this.config.wrappedNativeTokenAddress;
-//         }
-//         if (tokenA.toLowerCase() === tokenB.toLowerCase()) {
-//             throw new Error("TokenA and TokenB cannot be the same");
-//         }
-//         const getPools = async (isStable: boolean) => {
-//             try {
-//                 const poolAddress: string = await factory.getPool(tokenA, tokenB, isStable);
-
-//                 // 🧠 Early skip for zero address
-//                 if (
-//                     !poolAddress ||
-//                     poolAddress.toLowerCase() === "0x0000000000000000000000000000000000000000"
-//                 ) {
-//                     return null;
-//                 }
-
-//                 const pool = new Contract(poolAddress, AERODROME_V3_POOL_ABI, this.provider);
-//                 console.log('pool: ', pool);
-//                 const { Decimal } = await import("decimal.js");
-//                 const reserve0 = new Decimal((await pool.reserve0()).toString());
-//                 const reserve1 = new Decimal((await pool.reserve1()).toString());
-
-
-//                 // only now fetch poolData since it's a heavier call
-//                 const poolData = await this.getVPoolData(poolAddress);
-
-//                 const res = {
-//                     pool,
-//                     fee: 0,
-//                     //TODO: THIS IS VERY WRONG FACTOR THIS
-//                     liquidity: `${reserve0}:${reserve1}` as any as Decimal,
-//                     address: poolAddress,
-//                     poolData,
-//                 };
-
-
-//                 return res;
-//             } catch (error) {
-//                 console.warn(`Error checking pool for isStable ${isStable} on DEX {${this.config.name}}`);
-//                 return null;
-//             }
-//         }
-
-//         const foundPools = await Promise.all([
-//             await getPools(false),
-//             await getPools(true)
-//         ])
-
-//         const clean = foundPools.filter((p): p is PoolInfo & { poolData: PoolData } => p !== null);
-//         return clean;
-//     }
-//     private calculateStableSwapOutput(params: {
-//         amountInRaw: Decimal;
-//         reserveIn: Decimal;
-//         reserveOut: Decimal;
-//         decimalsIn: number;
-//         decimalsOut: number;
-//         token0Address: string;
-//         tokenInAddress: string;
-//     }): Decimal {
-//         const {
-//             amountInRaw,
-//             reserveIn,
-//             reserveOut,
-//             decimalsIn,
-//             decimalsOut,
-//             token0Address,
-//             tokenInAddress
-//         } = params;
-
-//         // Calculate xy (the invariant k)
-//         const xy = this._k(reserveIn, reserveOut, decimalsIn, decimalsOut);
-
-//         // Normalize reserves to 1e18
-//         const reserve0Normalized = reserveIn.mul(Decimal.pow(10, 18)).div(Decimal.pow(10, decimalsIn));
-//         const reserve1Normalized = reserveOut.mul(Decimal.pow(10, 18)).div(Decimal.pow(10, decimalsOut));
-
-//         // Determine which reserve is A and which is B
-//         const isToken0 = tokenInAddress.toLowerCase() === token0Address.toLowerCase();
-//         const reserveA = isToken0 ? reserve0Normalized : reserve1Normalized;
-//         const reserveB = isToken0 ? reserve1Normalized : reserve0Normalized;
-
-//         // Normalize amountIn to 1e18
-//         const amountInNormalized = amountInRaw.mul(Decimal.pow(10, 18)).div(Decimal.pow(10, decimalsIn));
-
-//         // Calculate y using the stable swap curve
-//         const y = reserveB.sub(this._get_y(amountInNormalized.add(reserveA), xy, reserveB));
-
-//         // Denormalize back to token decimals
-//         return y.mul(Decimal.pow(10, decimalsOut)).div(Decimal.pow(10, 18));
-//     }
-//     public getAmountOut(params: {
-//         aToB: boolean;
-//         amountInFormattedInDecimal: Decimal;
-//         pool: PoolData;
-//     }): QuoteResult {
-//         const { aToB, amountInFormattedInDecimal, pool, } = params;
-//         const { liquidity, fee, token0, token1, poolAddress } = pool;
-//         const isStable = true
-//         if (!liquidity.includes(":")) {
-//             return super.getAmountOut({ aToB, amountInFormattedInDecimal, pool })
-//         }
-//         const [r0, r1] = liquidity.split(":")
-//         const reserve0 = new Decimal(r0)
-//         const reserve1 = new Decimal(r1)
-
-//         const tokenInObj = aToB ? token0 : token1;
-//         const tokenOutObj = aToB ? token1 : token0;
-//         const decimalsIn = Number(tokenInObj.decimals);
-//         const decimalsOut = Number(tokenOutObj.decimals);
-
-//         // Convert to raw amounts
-//         const amountInRaw = amountInFormattedInDecimal.mul(Decimal.pow(10, decimalsIn));
-
-//         // Apply fee (fee is in basis points, e.g., 5 for 0.05%)
-//         const feeMultiplier = new Decimal(10000).sub(fee).div(10000);
-//         const amountInWithFee = amountInRaw.mul(feeMultiplier);
-
-//         const reserveIn = aToB ? reserve0 : reserve1;
-//         const reserveOut = aToB ? reserve1 : reserve0;
-
-//         let amountOut: Decimal;
-
-//         if (isStable) {
-//             amountOut = this.calculateStableSwapOutput({
-//                 amountInRaw: amountInWithFee,
-//                 reserveIn,
-//                 reserveOut,
-//                 decimalsIn,
-//                 decimalsOut,
-//                 token0Address: token0.address.toLowerCase(),
-//                 tokenInAddress: tokenInObj.address.toLowerCase(),
-//             });
-//         } else {
-//             // Standard x*y=k formula (volatile pool)
-//             amountOut = amountInWithFee.mul(reserveOut).div(reserveIn.add(amountInWithFee));
-//         }
-
-//         // Convert back to formatted decimals
-//         const amountOutFormatted = amountOut.div(Decimal.pow(10, decimalsOut));
-
-//         // Fee amount in input token
-//         const feeAmount = amountInFormattedInDecimal.sub(
-//             amountInWithFee.div(Decimal.pow(10, decimalsIn))
-//         );
-
-//         // Calculate spot price
-//         const spotPrice = reserveIn.div(reserveOut).mul(
-//             Decimal.pow(10, decimalsOut - decimalsIn)
-//         );
-
-//         return {
-//             price: spotPrice.toNumber(),
-//             amountIn: amountInFormattedInDecimal,
-//             amountOut: amountOutFormatted,
-//             poolAddress,
-//             fee: feeAmount,
-//             liquidity: reserve0.mul(reserve1).sqrt(),
-//             tokenInDecimals: decimalsIn,
-//             tokenOutDecimals: decimalsOut,
-//             zeroForOne: aToB,
-//             sqrtPriceStart: new Decimal(0),
-//             sqrtPriceNext: new Decimal(0)
-//         };
-//     }
-//     public async getVPoolData(poolAddress: string): Promise<PoolData> {
-//         const cached = this.poolCache.get(poolAddress);
-//         if (cached) {
-//             return cached;
-//         }
-
-//         const pool = new Contract(poolAddress, AERODROME_VPOOL_ABI, this.provider);
-
-
-
-//         const [[_reserve0, _reserve1], token0Address, token1Address,] = await Promise.all([
-//             pool.getReserves(),
-//             pool.token0(),
-//             pool.token1(),
-//         ]);
-
-//         // console.log('token0Address: ', token0Address);
-//         // console.log('token1Address: ', token1Address);
-//         const [token0Details, token1Details] = await Promise.all([
-//             this.getTokenDetails(token0Address),
-//             this.getTokenDetails(token1Address),
-//         ]);
-
-//         const poolData: PoolData = {
-//             token0: token0Details,
-//             token1: token1Details,
-//             fee: Number(0),
-//             poolAddress,
-//             slot0: "",
-//             sqrtPriceX96: "",
-//             liquidity: `${_reserve0}:${_reserve1}`,
-//         };
-
-//         this.poolCache.set(poolAddress, poolData);
-//         return poolData;
-//     }
-
-//     public async getAllVPools(): Promise<PoolData[]> {
-//         // Map events to a more convenient format
-//         const pools: PoolCreatedEvent[] = await this.getAllVPoolsFromEvents(AERODROME_VPOOL_FACTORY, this.provider, "35006950", AERODROME_VPOOL_FACTORY_ABI);
-//         console.log('pools: ', pools.length);
-//         // console.log('pools: ', pools);
-//         const poolsData: PoolData[] = []
-//         // TODO: use .map to make it faster, right now we can't because of the rpc rate limit
-//         let count = 0
-//         for (const pool of pools) {
-//             try {
-//                 // Fetch pool data for each created pool
-//                 const poolData = await this.getVPoolData(pool.poolAddress);
-//                 console.log('poolData: ', poolData.poolAddress);
-//                 poolData.blockNumber = pool.blockNumber.toString()
-//                 poolsData.push(poolData);
-//             } catch (error: any) {
-//                 console.log('error: ', error);
-//                 console.error(`Error fetching data for pool ${pool.poolAddress}: ${error.message}`);
-//             }
-
-//             // if (count > 9) {
-//             //     await wait(5)
-//             //     count = 0
-//             // }
-//             // await wait(10)
-//         }
-
-//         // console.log('poolsData: ', poolsData);
-//         return poolsData // no longer filtering by liquidity
-//     }
-//     // Helper function to calculate k (invariant) for stable pools
-
-//     /**
-//      * Override getAllPools to use Aerodrome-specific event structure
-//      */
-//     public async getAllPools(abi = AERODROME_V3_FACTORY_ABI, fromBlock?: string) {
-//         const poolData = await super.getAllPools(abi, fromBlock);
-//         const vPoolData = await this.getAllVPools()
-
-//         return { ...poolData, ...vPoolData }
-//     }
-//     async findAllPools(tokenA: string, tokenB: string, feeTiers?: number[]): Promise<(PoolInfo & { poolData: PoolData })[]> {
-//         const foundPools = await super.findAllPools(tokenA, tokenB, feeTiers);
-//         const vPools = await this.findAllVPools(tokenA, tokenB, [])
-
-//         return { ...foundPools, ...vPools }
-//     }
-
-//     getAllVPoolsFromEvents = async (
-//         factoryAddress: string,
-//         provider: JsonRpcProvider,
-//         fromBlockHeight: string = this.config.fromBlock || "0",
-//         abi: any
-//     ) => {
-//         console.log("getting all the pools for chain: ", this.config.network, "rpc: ", this.chainConfig.rpcUrl, " provider rpc", provider._getConnection().url);
-//         const factory = new Contract(factoryAddress, abi, provider);
-
-//         const latestBlock = await provider.getBlockNumber();
-
-//         // Create filter for PoolCreated events
-//         // Event signature: PoolCreated(address,address,uint24,int24,int24,address)
-//         const filter = factory.filters.PoolCreated();
-
-//         // Get all PoolCreated events from the specified block range
-//         const events = await factory.queryFilter(
-//             filter,
-//             parseInt(fromBlockHeight),
-//             latestBlock
-//         );
-
-//         console.log('these are all the events fetched: ', events.length);
-
-//         // Map events to a more convenient format
-//         const pools: PoolCreatedEvent[] = events.map((event: any) => ({
-//             token0: event.args.token0,
-//             token1: event.args.token1,
-//             fee: event.args.tickSpacing.toString(),
-//             poolAddress: event.args.pool,
-//             blockNumber: event.blockNumber.toString(),
-//         }));
-
-//         // const dataToWrite = {
-//         //     pools: pools,
-//         //     lastBlockNumber: pools[pools.length - 1].blockNumber,
-//         // }
-
-
-//         return pools;
-//     }
-
-
-//     /**
-//      * Override simulateTransaction to use Aerodrome's quoter
-//      */
-//     public async simulateTransaction(
-//         tokenIn: string,
-//         tokenOut: string,
-//         amountIn: string,
-//         tickSpacing: number = 100,
-//         sqrtPriceLimitX96: string = "0"
-//     ): Promise<string> {
-//         if (!this.config.quoterAddress) {
-//             throw new Error("Quoter address not configured for Aerodrome");
-//         }
-
-//         const { Contract } = await import("ethers");
-//         const quoter = new Contract(
-//             this.config.quoterAddress,
-//             AERODROME_V3_QUOTER_ABI,
-//             this.provider
-//         );
-
-//         try {
-
-//             const result = await quoter.quoteExactInputSingle.staticCall(
-//                 { tokenIn, tokenOut, amountIn: BigInt(amountIn), tickSpacing, sqrtPriceLimitX96: BigInt(sqrtPriceLimitX96) }
-//             );
-
-//             return result.amountOut.toString(); // amountOut
-//         } catch (error) {
-//             console.error("Aerodrome quote simulation failed:", error);
-//             return "0";
-//         }
-//     }
-
-//     /**
-//      * Get supported tick spacings
-//      */
-//     public getTickSpacings(): number[] {
-//         return [...this.tickSpacings];
-//     }
-
-//     /**
-//      * Add custom tick spacing
-//      */
-//     public addTickSpacing(tickSpacing: number): void {
-//         if (!this.tickSpacings.includes(tickSpacing)) {
-//             this.tickSpacings.push(tickSpacing);
-//             this.tickSpacings.sort((a, b) => a - b);
-//         }
-//     }
-//     private _k(x: Decimal, y: Decimal, decimals0: number, decimals1: number): Decimal {
-//         const _x = x.mul(Decimal.pow(10, 18)).div(Decimal.pow(10, decimals0));
-//         const _y = y.mul(Decimal.pow(10, 18)).div(Decimal.pow(10, decimals1));
-//         const _a = _x.mul(_y).div(Decimal.pow(10, 18));
-//         const _b = _x.mul(_x).div(Decimal.pow(10, 18)).add(_y.mul(_y).div(Decimal.pow(10, 18)));
-//         return _a.mul(_b).div(Decimal.pow(10, 18)); // x3y+y3x >= k
-//     }
-
-//     // Helper function _f for Newton's method
-//     private _f(x0: Decimal, y: Decimal): Decimal {
-//         const _a = x0.mul(y).div(Decimal.pow(10, 18));
-//         const _b = x0.mul(x0).div(Decimal.pow(10, 18)).add(y.mul(y).div(Decimal.pow(10, 18)));
-//         return _a.mul(_b).div(Decimal.pow(10, 18));
-//     }
-
-//     // Helper function _d for Newton's method (derivative)
-//     private _d(x0: Decimal, y: Decimal): Decimal {
-//         const three = new Decimal(3);
-//         const term1 = three.mul(x0).mul(y.mul(y).div(Decimal.pow(10, 18))).div(Decimal.pow(10, 18));
-//         const term2 = x0.mul(x0).div(Decimal.pow(10, 18)).mul(x0).div(Decimal.pow(10, 18));
-//         return term1.add(term2);
-//     }
-
-//     // Newton's method to find y given x0 and xy (the invariant)
-//     private _get_y(x0: Decimal, xy: Decimal, y: Decimal): Decimal {
-//         for (let i = 0; i < 255; i++) {
-//             const k = this._f(x0, y);
-
-//             if (k.lt(xy)) {
-//                 const numerator = xy.sub(k).mul(Decimal.pow(10, 18));
-//                 const denominator = this._d(x0, y);
-//                 let dy = numerator.div(denominator);
-
-//                 if (dy.eq(0)) {
-//                     if (k.eq(xy)) {
-//                         return y;
-//                     }
-//                     if (this._k_simple(x0, y.add(1)).gt(xy)) {
-//                         return y.add(1);
-//                     }
-//                     dy = new Decimal(1);
-//                 }
-//                 y = y.add(dy);
-//             } else {
-//                 const numerator = k.sub(xy).mul(Decimal.pow(10, 18));
-//                 const denominator = this._d(x0, y);
-//                 let dy = numerator.div(denominator);
-
-//                 if (dy.eq(0)) {
-//                     if (k.eq(xy) || this._f(x0, y.sub(1)).lt(xy)) {
-//                         return y;
-//                     }
-//                     dy = new Decimal(1);
-//                 }
-//                 y = y.sub(dy);
-//             }
-//         }
-//         throw new Error("Newton's method did not converge for _get_y");
-//     }
-
-//     // Simplified k calculation for convergence checks
-//     private _k_simple(x0: Decimal, y: Decimal): Decimal {
-//         return this._f(x0, y);
-//     }
-// }
-
-// // ==================== USAGE EXAMPLE ====================
-
-
-
+/**
+ * Aerodrome V2 (Classic AMM) Quote Calculator
+ * 
+ * Supports both Volatile (x * y = k) and Stable (x^3*y + y^3*x = k) pool curves
+ * with live on-chain getAmountOut verification and dynamic fee resolution.
+ */
+
+import { ethers, Contract, JsonRpcProvider } from "ethers";
+import Decimal from "decimal.js";
+import { Token } from "./type";
+import { ChainConfig, createJsonRpcProvider, ERC20_ABI } from "./UniswapV3Calculator";
+import { getTokenPrice, getTokenPriceByAddress } from "./price";
+import { NetworkType } from "./constants";
+
+// ==================== ABIS ====================
+
+export const AERODROME_V2_FACTORY_ABI = [
+    {
+        inputs: [
+            { internalType: "address", name: "tokenA", type: "address" },
+            { internalType: "address", name: "tokenB", type: "address" },
+            { internalType: "bool", name: "stable", type: "bool" },
+        ],
+        name: "getPool",
+        outputs: [{ internalType: "address", name: "", type: "address" }],
+        stateMutability: "view",
+        type: "function",
+    },
+    {
+        inputs: [
+            { internalType: "address", name: "pool", type: "address" },
+            { internalType: "bool", name: "stable", type: "bool" },
+        ],
+        name: "getFee",
+        outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+        stateMutability: "view",
+        type: "function",
+    },
+    {
+        inputs: [],
+        name: "volatileFee",
+        outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+        stateMutability: "view",
+        type: "function",
+    },
+    {
+        inputs: [],
+        name: "stableFee",
+        outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+        stateMutability: "view",
+        type: "function",
+    },
+    {
+        inputs: [],
+        name: "allPoolsLength",
+        outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+        stateMutability: "view",
+        type: "function",
+    },
+] as const;
+
+export const AERODROME_V2_POOL_ABI = [
+    {
+        inputs: [],
+        name: "getReserves",
+        outputs: [
+            { internalType: "uint256", name: "_reserve0", type: "uint256" },
+            { internalType: "uint256", name: "_reserve1", type: "uint256" },
+            { internalType: "uint256", name: "_blockTimestampLast", type: "uint256" },
+        ],
+        stateMutability: "view",
+        type: "function",
+    },
+    {
+        inputs: [],
+        name: "token0",
+        outputs: [{ internalType: "address", name: "", type: "address" }],
+        stateMutability: "view",
+        type: "function",
+    },
+    {
+        inputs: [],
+        name: "token1",
+        outputs: [{ internalType: "address", name: "", type: "address" }],
+        stateMutability: "view",
+        type: "function",
+    },
+    {
+        inputs: [],
+        name: "stable",
+        outputs: [{ internalType: "bool", name: "", type: "bool" }],
+        stateMutability: "view",
+        type: "function",
+    },
+    {
+        inputs: [
+            { internalType: "uint256", name: "amountIn", type: "uint256" },
+            { internalType: "address", name: "tokenIn", type: "address" },
+        ],
+        name: "getAmountOut",
+        outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+        stateMutability: "view",
+        type: "function",
+    },
+] as const;
+
+// ==================== TYPES ====================
+
+export interface AerodromeV2DexConfig {
+    name: string;
+    network: NetworkType;
+    factoryAddress: string;
+    routerAddress?: string;
+    wrappedNativeTokenAddress: string;
+    nativeTokenAddress: string;
+    stableTokenAddress?: string;
+}
+
+export interface AerodromePoolData {
+    poolAddress: string;
+    token0: Token;
+    token1: Token;
+    stable: boolean;
+    reserve0: string;
+    reserve1: string;
+    fee: number; // in basis points (e.g. 30 = 0.3%, 5 = 0.05%)
+    blockTimestampLast?: number;
+}
+
+export interface AerodromePoolInfo {
+    pool: Contract;
+    fee: number;
+    stable: boolean;
+    liquidity: Decimal;
+    address: string;
+    poolData: AerodromePoolData;
+}
+
+export interface AerodromeQuoteResult {
+    price: number;
+    amountIn: Decimal;
+    amountOut: Decimal;
+    poolAddress: string;
+    fee: Decimal;
+    stable: boolean;
+    tokenInDecimals: number;
+    tokenOutDecimals: number;
+    zeroForOne: boolean;
+}
+
+// ==================== CALCULATOR CLASS ====================
+
+export class AerodromeV2QuoteCalculator {
+    public dexConfig: AerodromeV2DexConfig;
+    public chainConfig: ChainConfig;
+    public provider: JsonRpcProvider;
+    private factoryContract: Contract;
+    private tokenMetadataCache: Map<string, Token> = new Map();
+
+    constructor(
+        dexConfig: AerodromeV2DexConfig,
+        chainConfig: ChainConfig,
+        provider?: JsonRpcProvider
+    ) {
+        this.dexConfig = dexConfig;
+        this.chainConfig = chainConfig;
+        this.provider = provider || createJsonRpcProvider(chainConfig.rpcUrl, chainConfig.chainId);
+        this.factoryContract = new Contract(
+            dexConfig.factoryAddress,
+            AERODROME_V2_FACTORY_ABI as any,
+            this.provider
+        );
+    }
+
+    /**
+     * Resolves ERC-20 token metadata (decimals, symbol, name) with caching
+     */
+    public async getTokenMetadata(tokenAddress: string, provider?: JsonRpcProvider): Promise<Token> {
+        const normalized = ethers.getAddress(tokenAddress);
+        const lower = normalized.toLowerCase();
+        const cached = this.tokenMetadataCache.get(lower);
+        if (cached) return cached;
+
+        if (this.dexConfig.wrappedNativeTokenAddress && lower === this.dexConfig.wrappedNativeTokenAddress.toLowerCase()) {
+            const token: Token = {
+                address: normalized,
+                decimals: 18,
+                symbol: this.chainConfig.wrappedTokenSymbol || "WETH",
+                name: "Wrapped Ether",
+            };
+            this.tokenMetadataCache.set(lower, token);
+            return token;
+        }
+
+        if (this.dexConfig.nativeTokenAddress && lower === this.dexConfig.nativeTokenAddress.toLowerCase()) {
+            const token: Token = {
+                address: normalized,
+                decimals: 18,
+                symbol: this.chainConfig.nativeTokenSymbol || "ETH",
+                name: "Ether",
+            };
+            this.tokenMetadataCache.set(lower, token);
+            return token;
+        }
+
+        if (this.dexConfig.stableTokenAddress && lower === this.dexConfig.stableTokenAddress.toLowerCase()) {
+            const token: Token = {
+                address: normalized,
+                decimals: 6,
+                symbol: "USDC",
+                name: "USD Coin",
+            };
+            this.tokenMetadataCache.set(lower, token);
+            return token;
+        }
+
+        const prov = provider || this.provider;
+        const tokenContract = new Contract(normalized, ERC20_ABI, prov);
+
+        try {
+            const [decimals, symbol, name] = await Promise.all([
+                tokenContract.decimals().catch(() => 18),
+                tokenContract.symbol().catch(() => "UNKNOWN"),
+                tokenContract.name().catch(() => "Unknown Token"),
+            ]);
+
+            const token: Token = {
+                address: normalized,
+                decimals: Number(decimals),
+                symbol: String(symbol),
+                name: String(name),
+            };
+
+            this.tokenMetadataCache.set(lower, token);
+            return token;
+        } catch {
+            const fallbackToken: Token = {
+                address: normalized,
+                decimals: 18,
+                symbol: "UNKNOWN",
+                name: "Unknown Token",
+            };
+            this.tokenMetadataCache.set(lower, fallbackToken);
+            return fallbackToken;
+        }
+    }
+
+    /**
+     * Resolves a single Aerodrome V2 pool for (tokenIn, tokenOut, stable)
+     */
+    public async findPool(
+        tokenIn: string,
+        tokenOut: string,
+        stable: boolean,
+        provider?: JsonRpcProvider
+    ): Promise<AerodromePoolInfo | null> {
+        try {
+            const normIn = ethers.getAddress(tokenIn);
+            const normOut = ethers.getAddress(tokenOut);
+            if (normIn.toLowerCase() === normOut.toLowerCase()) return null;
+
+            const prov = provider || this.provider;
+            const factory = provider
+                ? new Contract(this.dexConfig.factoryAddress, AERODROME_V2_FACTORY_ABI as any, provider)
+                : this.factoryContract;
+
+            const poolAddress = await factory.getPool(normIn, normOut, stable).catch(() => ethers.ZeroAddress);
+            if (!poolAddress || poolAddress.toLowerCase() === ethers.ZeroAddress.toLowerCase()) {
+                return null;
+            }
+
+            const poolContract = new Contract(poolAddress, AERODROME_V2_POOL_ABI as any, prov);
+            const [reserves, t0Address, t1Address, feeRaw] = await Promise.all([
+                poolContract.getReserves().catch(() => null),
+                poolContract.token0().catch(() => null),
+                poolContract.token1().catch(() => null),
+                factory.getFee(poolAddress, stable).catch(() => (stable ? 5n : 30n)),
+            ]);
+
+            if (!reserves || !t0Address || !t1Address) return null;
+
+            const r0 = new Decimal(reserves[0].toString());
+            const r1 = new Decimal(reserves[1].toString());
+            if (r0.lte(0) || r1.lte(0)) return null;
+
+            const [token0, token1] = await Promise.all([
+                this.getTokenMetadata(t0Address, prov),
+                this.getTokenMetadata(t1Address, prov),
+            ]);
+
+            const fee = Number(feeRaw || (stable ? 5 : 30));
+            const poolData: AerodromePoolData = {
+                poolAddress,
+                token0,
+                token1,
+                stable,
+                reserve0: r0.toFixed(0),
+                reserve1: r1.toFixed(0),
+                fee,
+                blockTimestampLast: Number(reserves[2] || 0),
+            };
+
+            const liquidity = r0.mul(r1).sqrt();
+
+            return {
+                pool: poolContract,
+                fee,
+                stable,
+                liquidity,
+                address: poolAddress,
+                poolData,
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Finds both Volatile and Stable Aerodrome pools for a token pair
+     */
+    public async findAllPools(
+        tokenIn: string,
+        tokenOut: string,
+        provider?: JsonRpcProvider
+    ): Promise<AerodromePoolInfo[]> {
+        const [volatilePool, stablePool] = await Promise.all([
+            this.findPool(tokenIn, tokenOut, false, provider),
+            this.findPool(tokenIn, tokenOut, true, provider),
+        ]);
+
+        const results: AerodromePoolInfo[] = [];
+        if (volatilePool) results.push(volatilePool);
+        if (stablePool) results.push(stablePool);
+        return results;
+    }
+
+    /**
+     * Calculates the output amount using analytical curve math (volatile or stable)
+     */
+    public getAmountOut(params: {
+        pool: AerodromePoolData;
+        aToB: boolean;
+        amountInFormattedInDecimal: Decimal;
+    }): AerodromeQuoteResult {
+        const { pool, aToB, amountInFormattedInDecimal } = params;
+        const tokenIn = aToB ? pool.token0 : pool.token1;
+        const tokenOut = aToB ? pool.token1 : pool.token0;
+
+        const rawAmountIn = amountInFormattedInDecimal.mul(new Decimal(10).pow(tokenIn.decimals));
+        const feeRate = new Decimal(pool.fee).div(10000);
+        const amountInAfterFee = rawAmountIn.mul(new Decimal(1).sub(feeRate));
+
+        const rInRaw = aToB ? new Decimal(pool.reserve0) : new Decimal(pool.reserve1);
+        const rOutRaw = aToB ? new Decimal(pool.reserve1) : new Decimal(pool.reserve0);
+
+        if (rInRaw.lte(0) || rOutRaw.lte(0) || rawAmountIn.lte(0)) {
+            return {
+                price: 0,
+                amountIn: amountInFormattedInDecimal,
+                amountOut: new Decimal(0),
+                poolAddress: pool.poolAddress,
+                fee: new Decimal(pool.fee),
+                stable: pool.stable,
+                tokenInDecimals: tokenIn.decimals,
+                tokenOutDecimals: tokenOut.decimals,
+                zeroForOne: aToB,
+            };
+        }
+
+        let rawAmountOut: Decimal;
+
+        if (!pool.stable) {
+            // Volatile: standard constant product formula dx * y / (x + dx)
+            rawAmountOut = amountInAfterFee.mul(rOutRaw).div(rInRaw.add(amountInAfterFee));
+        } else {
+            // Stable curve: x^3*y + y^3*x = k (normalized to 18 decimals)
+            rawAmountOut = this.calculateStableAmountOut(
+                rawAmountIn,
+                rInRaw,
+                rOutRaw,
+                tokenIn.decimals,
+                tokenOut.decimals,
+                pool.fee
+            );
+        }
+
+        const amountOutFormatted = Decimal.max(0, rawAmountOut.div(new Decimal(10).pow(tokenOut.decimals)));
+
+        // Spot price
+        let spotPrice = 0;
+        if (!pool.stable) {
+            const rInHuman = rInRaw.div(new Decimal(10).pow(tokenIn.decimals));
+            const rOutHuman = rOutRaw.div(new Decimal(10).pow(tokenOut.decimals));
+            spotPrice = rInHuman.gt(0) ? rOutHuman.div(rInHuman).toNumber() : 0;
+        } else {
+            // For stable, spot price is near 1 adjusted for peg
+            const testAmount = new Decimal(1);
+            const testOut = this.calculateStableAmountOut(
+                testAmount.mul(new Decimal(10).pow(tokenIn.decimals)),
+                rInRaw,
+                rOutRaw,
+                tokenIn.decimals,
+                tokenOut.decimals,
+                0 // no fee for spot price
+            ).div(new Decimal(10).pow(tokenOut.decimals));
+            spotPrice = testOut.toNumber();
+        }
+
+        return {
+            price: spotPrice,
+            amountIn: amountInFormattedInDecimal,
+            amountOut: amountOutFormatted,
+            poolAddress: pool.poolAddress,
+            fee: new Decimal(pool.fee),
+            stable: pool.stable,
+            tokenInDecimals: tokenIn.decimals,
+            tokenOutDecimals: tokenOut.decimals,
+            zeroForOne: aToB,
+        };
+    }
+
+    /**
+     * Solves Solidly stable curve x^3*y + y^3*x = k via Newton-Raphson
+     */
+    private calculateStableAmountOut(
+        amountInRaw: Decimal,
+        reserveInRaw: Decimal,
+        reserveOutRaw: Decimal,
+        decimalsIn: number,
+        decimalsOut: number,
+        feeBps: number
+    ): Decimal {
+        try {
+            const dIn = new Decimal(10).pow(18 - decimalsIn);
+            const dOut = new Decimal(10).pow(18 - decimalsOut);
+
+            const x0 = reserveInRaw.mul(dIn);
+            const y0 = reserveOutRaw.mul(dOut);
+            const k = x0.pow(3).mul(y0).add(y0.pow(3).mul(x0));
+
+            const fee = new Decimal(feeBps).div(10000);
+            const dx = amountInRaw.mul(dIn).mul(new Decimal(1).sub(fee));
+            const x1 = x0.add(dx);
+
+            let y = y0;
+            for (let i = 0; i < 255; i++) {
+                const yPrev = y;
+                const numerator = new Decimal(2).mul(x1).mul(y.pow(3)).add(k);
+                const denominator = x1.pow(3).add(new Decimal(3).mul(x1).mul(y.pow(2)));
+                if (denominator.lte(0)) break;
+                y = numerator.div(denominator);
+                if (y.sub(yPrev).abs().lte(1)) break;
+            }
+
+            const dy = y0.sub(y);
+            return dy.div(dOut);
+        } catch {
+            // Fallback to constant product if numerical error occurs
+            const feeRate = new Decimal(feeBps).div(10000);
+            const dxAfterFee = amountInRaw.mul(new Decimal(1).sub(feeRate));
+            return dxAfterFee.mul(reserveOutRaw).div(reserveInRaw.add(dxAfterFee));
+        }
+    }
+
+    /**
+     * Simulates swap execution directly through the pool's on-chain getAmountOut view method
+     */
+    public async simulateTransaction(
+        tokenIn: string,
+        tokenOut: string,
+        amountIn: string,
+        poolAddress: string,
+        provider?: JsonRpcProvider
+    ): Promise<{ amountOut: string; pool: string }> {
+        const prov = provider || this.provider;
+        const normIn = ethers.getAddress(tokenIn);
+        const normOut = ethers.getAddress(tokenOut);
+
+        try {
+            const poolContract = new Contract(poolAddress, AERODROME_V2_POOL_ABI as any, prov);
+            const tokenInMeta = await this.getTokenMetadata(normIn, prov);
+            const tokenOutMeta = await this.getTokenMetadata(normOut, prov);
+
+            const rawAmountIn = new Decimal(amountIn)
+                .mul(new Decimal(10).pow(tokenInMeta.decimals))
+                .toFixed(0);
+
+            const rawAmountOut = await poolContract.getAmountOut(BigInt(rawAmountIn), normIn);
+
+            const amountOutFormatted = new Decimal(rawAmountOut.toString())
+                .div(new Decimal(10).pow(tokenOutMeta.decimals))
+                .toString();
+
+            return { amountOut: amountOutFormatted, pool: poolAddress };
+        } catch {
+            // Fallback to analytical calculation
+            const poolContract = new Contract(poolAddress, AERODROME_V2_POOL_ABI as any, prov);
+            const [reserves, isStable, token0Address] = await Promise.all([
+                poolContract.getReserves().catch(() => [0n, 0n]),
+                poolContract.stable().catch(() => false),
+                poolContract.token0().catch(() => normIn),
+            ]);
+
+            const aToB = normIn.toLowerCase() === token0Address.toLowerCase();
+            const tokenInMeta = await this.getTokenMetadata(normIn, prov);
+            const tokenOutMeta = await this.getTokenMetadata(normOut, prov);
+
+            const poolData: AerodromePoolData = {
+                poolAddress,
+                token0: aToB ? tokenInMeta : tokenOutMeta,
+                token1: aToB ? tokenOutMeta : tokenInMeta,
+                stable: isStable,
+                reserve0: aToB ? reserves[0].toString() : reserves[1].toString(),
+                reserve1: aToB ? reserves[1].toString() : reserves[0].toString(),
+                fee: isStable ? 5 : 30,
+            };
+
+            const quote = this.getAmountOut({
+                pool: poolData,
+                aToB,
+                amountInFormattedInDecimal: new Decimal(amountIn),
+            });
+
+            return { amountOut: quote.amountOut.toString(), pool: poolAddress };
+        }
+    }
+
+    /**
+     * Resolves the USD price of a token via Aerodrome V2 pools
+     */
+    public async getSureTokenPrice(tokenAddress: string): Promise<number> {
+        const normalized = ethers.getAddress(tokenAddress);
+        const stableAddress = this.chainConfig.stableTokenAddress?.toLowerCase();
+        const wrappedAddress = this.chainConfig.wrappedNativeTokenAddress?.toLowerCase();
+
+        if (stableAddress && normalized.toLowerCase() === stableAddress) {
+            return 1;
+        }
+
+        try {
+            const externalPriceResult = await getTokenPriceByAddress(this.chainConfig.network, normalized);
+            if (externalPriceResult.success && externalPriceResult.data && externalPriceResult.data.price > 0) {
+                return externalPriceResult.data.price;
+            }
+        } catch {
+            // continue to on-chain derivation
+        }
+
+        // Try against stable token
+        if (stableAddress) {
+            const stablePools = await this.findAllPools(normalized, stableAddress);
+            if (stablePools.length > 0) {
+                const bestPool = stablePools.reduce((a, b) => (a.liquidity.gt(b.liquidity) ? a : b));
+                const aToB = bestPool.poolData.token0.address.toLowerCase() === normalized.toLowerCase();
+                const quote = this.getAmountOut({
+                    pool: bestPool.poolData,
+                    aToB,
+                    amountInFormattedInDecimal: new Decimal(1),
+                });
+                if (quote.amountOut.gt(0)) return quote.amountOut.toNumber();
+            }
+        }
+
+        // Try against wrapped native (WETH)
+        if (wrappedAddress && normalized.toLowerCase() !== wrappedAddress) {
+            const nativePools = await this.findAllPools(normalized, wrappedAddress);
+            if (nativePools.length > 0) {
+                const bestPool = nativePools.reduce((a, b) => (a.liquidity.gt(b.liquidity) ? a : b));
+                const aToB = bestPool.poolData.token0.address.toLowerCase() === normalized.toLowerCase();
+                const quote = this.getAmountOut({
+                    pool: bestPool.poolData,
+                    aToB,
+                    amountInFormattedInDecimal: new Decimal(1),
+                });
+                const nativePriceUsd = await this.getSureTokenPrice(wrappedAddress);
+                if (quote.amountOut.gt(0) && nativePriceUsd > 0) {
+                    return quote.amountOut.mul(nativePriceUsd).toNumber();
+                }
+            }
+        }
+
+        return 1;
+    }
+
+    public formatPool(pool: any): AerodromePoolData {
+        return {
+            poolAddress: pool.poolAddress,
+            token0: pool.token0,
+            token1: pool.token1,
+            stable: Boolean(pool.stable),
+            reserve0: pool.reserve0 || "0",
+            reserve1: pool.reserve1 || "0",
+            fee: Number(pool.fee || (pool.stable ? 5 : 30)),
+            blockTimestampLast: pool.blockTimestampLast ? Number(pool.blockTimestampLast) : undefined,
+        };
+    }
+}

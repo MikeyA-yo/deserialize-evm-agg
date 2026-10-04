@@ -1,175 +1,182 @@
 "use strict";
 //controller logics here
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.tokenListWithDetailsController = exports.tokenDetailsController = exports.tokenPriceController = exports.tokenListController = exports.testnetSwapTransactionController = exports.swapTransactionController = exports.swapQuoteController = void 0;
+exports.tokenSearchController = exports.tokenListWithDetailsController = exports.tokenDetailsController = exports.tokenPriceController = exports.tokenListController = exports.testnetSwapTransactionController = exports.swapTransactionController = exports.swapQuoteController = void 0;
 const swap_schema_1 = require("./swap.schema");
 const swap_service_1 = require("./swap.service");
-const ethers_1 = require("ethers");
 const routes_providers_1 = require("@deserialize-evm-agg/routes-providers");
+const chainFromRequest = (paramChain, bodyChain) => {
+    return (0, routes_providers_1.normalizeNetworkType)(paramChain || bodyChain || "0G");
+};
+const providerForChain = (chainName) => {
+    const chain = (0, routes_providers_1.getChainFromName)(chainName);
+    return (0, routes_providers_1.createJsonRpcProvider)(chain.rpcUrl, chain.chainId);
+};
 const swapQuoteController = async (req, res, next) => {
-    console.log("Swap endpoint accessed");
+    console.log("\n--- [QUOTE:START] Swap Quote Request Initiated ---");
     try {
-        const data = req.body;
-        //parse the data
+        console.log("  [QUOTE:STEP 1] Validating quote request schema...");
         const { body, params } = swap_schema_1.SwapQuoteRequestSchema.parse(req);
-        let chain;
-        if (!params?.chain) {
-            chain = (0, routes_providers_1.getChainFromName)("0G");
-        }
-        else {
-            chain = (0, routes_providers_1.getChainFromName)(params.chain);
-        }
-        const provider = new ethers_1.JsonRpcProvider(chain.rpcUrl);
-        const swap = await (0, swap_service_1.swapQuoteService)(body, provider, params?.chain ?? "0G");
-        console.log("Swap quote processed successfully", {
-            amountOut: swap.amountOut.toString(),
+        const chainName = chainFromRequest(params?.chain, body.chain);
+        console.log(`  [QUOTE:STEP 2] Network identified: ${chainName} (URL param: "${params?.chain}", Body: "${body.chain}")`);
+        console.log(`  [QUOTE:STEP 3] Quote parameters: tokenA=${body.tokenA}, tokenB=${body.tokenB}, amountIn=${body.amountIn}, dexId=${body.dexId}`);
+        const provider = providerForChain(chainName);
+        console.log(`  [QUOTE:STEP 4] Calling swapQuoteService...`);
+        const swap = await (0, swap_service_1.swapQuoteService)(body, provider, chainName);
+        console.log(`  [QUOTE:SUCCESS] Quote calculated successfully:`, {
+            tokenA: swap.tokenA,
+            tokenB: swap.tokenB,
+            amountIn: swap.amountIn,
+            amountOut: swap.amountOut?.toString(),
+            tokenPrice: swap.tokenPrice,
+            routeHops: swap.routePlan?.length,
+            isNativeIn: swap.isNativeIn,
+            isNativeOut: swap.isNativeOut,
         });
+        console.log("--- [QUOTE:END] Swap Quote Request Completed ---\n");
         res.send(swap);
     }
     catch (error) {
-        console.log("Error in swapController", { error });
+        console.error("❌ [QUOTE:ERROR] Error in swapQuoteController:", {
+            message: error?.message,
+            stack: error?.stack,
+            issues: error?.issues,
+        });
         next(error);
     }
 };
 exports.swapQuoteController = swapQuoteController;
 const swapTransactionController = async (req, res, next) => {
-    console.log("Swap transaction accessed");
+    console.log("\n--- [SWAP_TX:START] Swap Transaction Request Initiated ---");
     try {
-        const data = req.body;
+        console.log("  [SWAP_TX:STEP 1] Validating swap transaction request schema...");
         const { body, params } = swap_schema_1.SwapRequestSchema.parse(req);
-        //parse the data
-        let chain;
-        if (!params?.chain) {
-            chain = (0, routes_providers_1.getChainFromName)("0G");
-        }
-        else {
-            chain = (0, routes_providers_1.getChainFromName)(params.chain);
-        }
-        const provider = new ethers_1.JsonRpcProvider(chain.rpcUrl);
-        const { transaction } = await (0, swap_service_1.swapService)(body, provider, params?.chain ?? "0G");
-        console.log("Swap quote processed successfully", {
-            amountOut: transaction.transactions,
-        });
+        const chainName = chainFromRequest(params?.chain, body.chain || (body.quote?.dexId?.includes("BASE") ? "BASE" : undefined));
+        console.log(`  [SWAP_TX:STEP 2] Network identified: ${chainName} (URL param: "${params?.chain}", Body: "${body.chain}", quote.dexId: "${body.quote?.dexId}")`);
+        console.log(`  [SWAP_TX:STEP 3] User wallet: ${body.publicKey}, slippage: ${body.slippage}%, pair: ${body.quote.tokenA} -> ${body.quote.tokenB}`);
+        const provider = providerForChain(chainName);
+        console.log(`  [SWAP_TX:STEP 4] Calling swapService to generate transaction payloads...`);
+        const { transaction } = await (0, swap_service_1.swapService)(body, provider, chainName);
+        console.log(`  [SWAP_TX:SUCCESS] Generated ${transaction.transactions.length} transaction(s):`, transaction.transactions.map((t, idx) => ({
+            index: idx,
+            to: t.to,
+            value: t.value?.toString() || "0",
+            dataLength: t.data?.length || 0,
+        })));
+        console.log("--- [SWAP_TX:END] Swap Transaction Request Completed ---\n");
         res.send(transaction);
     }
     catch (error) {
-        console.log("Error in swapController", { error });
+        console.error("❌ [SWAP_TX:ERROR] Error in swapTransactionController:", {
+            message: error?.message,
+            stack: error?.stack,
+            issues: error?.issues,
+        });
         next(error);
     }
 };
 exports.swapTransactionController = swapTransactionController;
-// export const testnetSwapQuoteController = async (
-//     req: Request,
-//     res: Response,
-//     next: NextFunction
-// ) => {
-//     console.log("Swap endpoint accessed");
-//     try {
-//         const data = req.body;
-//         //parse the data
-//         const chain = {
-//             name: "0g",
-//             rpc: "https://evmrpc-testnet.0g.ai"
-//         }
-//         const provider = new JsonRpcProvider(chain.rpc)
-//         const { body } = SwapQuoteRequestSchema.parse(req);
-//         const swap = await swapQuoteService(body, provider);
-//         console.log("Swap quote processed successfully", {
-//             amountOut: swap.amountOut.toString(),
-//         });
-//         res.send(swap);
-//     } catch (error) {
-//         console.log("Error in swapController", { error });
-//         next(error);
-//     }
-// };
 const testnetSwapTransactionController = async (req, res, next) => {
-    console.log("Swap transaction accessed");
+    console.log("\n--- [TESTNET_SWAP:START] Testnet Swap Transaction Request ---");
     try {
-        const data = req.body;
-        //parse the data
         const { body, params } = swap_schema_1.SwapRequestSchema.parse(req);
-        let chain;
-        if (!params?.chain) {
-            chain = (0, routes_providers_1.getChainFromName)("0G");
-        }
-        else {
-            chain = (0, routes_providers_1.getChainFromName)(params.chain);
-        }
-        const provider = new ethers_1.JsonRpcProvider(chain.rpcUrl);
-        const { transaction } = await (0, swap_service_1.swapService)(body, provider, params?.chain ?? "0G");
-        console.log("Swap quote processed successfully", {
-            amountOut: transaction.transactions,
-        });
+        const chainName = chainFromRequest(params?.chain);
+        const provider = providerForChain(chainName);
+        const { transaction } = await (0, swap_service_1.swapService)(body, provider, chainName);
+        console.log("  [TESTNET_SWAP:SUCCESS] Transactions generated:", transaction.transactions.length);
         res.send(transaction);
     }
     catch (error) {
-        console.log("Error in swapController", { error });
+        console.error("❌ [TESTNET_SWAP:ERROR]:", error);
         next(error);
     }
 };
 exports.testnetSwapTransactionController = testnetSwapTransactionController;
 const tokenListController = async (req, res, next) => {
-    // console.log("Token List accessed");
     try {
-        //parse the data
         const { params } = req;
-        const chain = (0, routes_providers_1.getChainFromName)(params.chain ?? "0G");
-        const provider = new ethers_1.JsonRpcProvider(chain.rpcUrl);
-        const result = await (0, swap_service_1.tokenList)(provider, params.chain ?? "0G");
+        const chainName = chainFromRequest(typeof params.chain === "string" ? params.chain : undefined);
+        console.log(`  [TOKEN_LIST] Fetching token list for network: ${chainName}...`);
+        const provider = providerForChain(chainName);
+        const result = await (0, swap_service_1.tokenList)(provider, chainName);
+        console.log(`  [TOKEN_LIST:SUCCESS] Found ${result.length} token(s) for ${chainName}`);
         res.send({ result });
     }
     catch (error) {
-        console.log("Error in tokeList", { error });
+        console.error("❌ [TOKEN_LIST:ERROR]:", error?.message);
         next(error);
     }
 };
 exports.tokenListController = tokenListController;
 const tokenPriceController = async (req, res, next) => {
-    // console.log("Token List accessed");
     try {
-        //parse the data
         const { params } = swap_schema_1.TokenPriceRequestSchema.parse(req);
-        const chain = (0, routes_providers_1.getChainFromName)(params.chain ?? "0G");
-        const provider = new ethers_1.JsonRpcProvider(chain.rpcUrl);
-        const result = await (0, swap_service_1.getTokenPriceService)(params.tokenAddress, provider, params.chain ?? "0G");
+        const chainName = chainFromRequest(params.chain);
+        console.log(`  [TOKEN_PRICE] Fetching price for token: ${params.tokenAddress} on ${chainName}...`);
+        const provider = providerForChain(chainName);
+        const result = await (0, swap_service_1.getTokenPriceService)(params.tokenAddress, provider, chainName);
+        console.log(`  [TOKEN_PRICE:SUCCESS] Price for ${params.tokenAddress}: $${result}`);
         res.send({ result });
     }
     catch (error) {
-        console.log("Error in tokeList", { error });
+        console.error(`❌ [TOKEN_PRICE:ERROR] Token ${req.params?.tokenAddress}:`, error?.message);
         next(error);
     }
 };
 exports.tokenPriceController = tokenPriceController;
 const tokenDetailsController = async (req, res, next) => {
-    // console.log("Token List accessed");
     try {
-        //parse the data
         const { params } = swap_schema_1.TokenDetailsRequestSchema.parse(req);
-        const chain = (0, routes_providers_1.getChainFromName)(params.chain ?? "0G");
-        const provider = new ethers_1.JsonRpcProvider(chain.rpcUrl);
-        const result = await (0, swap_service_1.getTokenDetailsService)(params.tokenAddress, provider, params.chain ?? "0G");
+        const chainName = chainFromRequest(params.chain);
+        console.log(`  [TOKEN_DETAILS] Fetching details for token: ${params.tokenAddress} on ${chainName}...`);
+        const provider = providerForChain(chainName);
+        const result = await (0, swap_service_1.getTokenDetailsService)(params.tokenAddress, provider, chainName);
+        console.log(`  [TOKEN_DETAILS:SUCCESS] Token: ${result?.symbol} (${result?.name}, Decimals: ${result?.decimals})`);
         res.send({ result });
     }
     catch (error) {
-        console.log("Error in tokeList", { error });
+        console.error(`❌ [TOKEN_DETAILS:ERROR] Token ${req.params?.tokenAddress}:`, error?.message);
         next(error);
     }
 };
 exports.tokenDetailsController = tokenDetailsController;
 const tokenListWithDetailsController = async (req, res, next) => {
-    console.log("Token List with Details accessed");
     try {
-        //parse the data
         const { params } = req;
-        const chain = (0, routes_providers_1.getChainFromName)(params.chain ?? "0G");
-        const provider = new ethers_1.JsonRpcProvider(chain.rpcUrl);
-        const result = await (0, swap_service_1.tokenListWithDetailsService)(provider, params.chain ?? "0G");
+        const chainName = chainFromRequest(typeof params.chain === "string" ? params.chain : undefined);
+        console.log(`  [TOKEN_LIST_DETAILS] Fetching detailed token list for ${chainName}...`);
+        const provider = providerForChain(chainName);
+        const result = await (0, swap_service_1.tokenListWithDetailsService)(provider, chainName);
+        console.log(`  [TOKEN_LIST_DETAILS:SUCCESS] Resolved ${result.length} detailed token(s)`);
         res.send({ result });
     }
     catch (error) {
-        console.log("Error in tokenListWithDetails", { error });
+        console.error("❌ [TOKEN_LIST_DETAILS:ERROR]:", error?.message);
         next(error);
     }
 };
 exports.tokenListWithDetailsController = tokenListWithDetailsController;
+const tokenSearchController = async (req, res, next) => {
+    try {
+        const chainName = chainFromRequest((typeof req.params.chain === "string" ? req.params.chain : undefined) ||
+            (typeof req.query.chain === "string" ? req.query.chain : undefined) ||
+            (typeof req.query.network === "string" ? req.query.network : undefined) ||
+            "BASE");
+        const searchQuery = (req.query.query ||
+            req.query.q ||
+            req.query.tick ||
+            req.query.symbol ||
+            req.params.query ||
+            "");
+        console.log(`  [TOKEN_SEARCH] Searching tokens for query="${searchQuery}" on network=${chainName}...`);
+        const provider = providerForChain(chainName);
+        const result = await (0, swap_service_1.tokenSearchService)(searchQuery, provider, chainName);
+        console.log(`  [TOKEN_SEARCH:SUCCESS] Found ${result.length} matching token(s) for query="${searchQuery}" on ${chainName}`);
+        res.send({ result, data: result });
+    }
+    catch (error) {
+        console.error("❌ [TOKEN_SEARCH:ERROR]:", error?.message);
+        next(error);
+    }
+};
+exports.tokenSearchController = tokenSearchController;
