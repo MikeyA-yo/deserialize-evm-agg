@@ -5,7 +5,7 @@ import Decimal from "decimal.js";
 import { ApiError } from "../errors/errors.api";
 import { DESERIALIZE_FEE } from "../constants";
 import { getSwapRequestFeeRate } from "../utils";
-import { AllDexIdTypes, getChainAllRoute, getTokenDetails, UniswapV3QuoteCalculator, ZeroGRoute } from "@deserialize-evm-agg/routes-providers";
+import { AllDexIdTypes, AllRoute, DeserializeRoutePlan, getChainAllRoute, getTokenDetails, UniswapV3QuoteCalculator, ZeroGRoute } from "@deserialize-evm-agg/routes-providers";
 import { NetworkType } from "@deserialize-evm-agg/routes-providers";
 
 
@@ -31,7 +31,7 @@ export const swapQuoteService = async (params: SwapQuoteRequestType, provider: J
         console.log(`    [QUOTE_SVC:2/5] Best routes retrieved (${routes.length} hop(s)):`, routes.map(r => `${r.dexId} (${r.tokenA.slice(0, 8)}... -> ${r.tokenB.slice(0, 8)}...) via pool ${r.poolAddress}`));
 
         console.log(`    [QUOTE_SVC:3/5] Simulating on-chain amountOut from route plan...`);
-        const { amountOut, pools } =
+        const { amountOut, pools, hopAmountsOut } =
             await RouteJsonRpcProvider.getAmountOutFromPlan(
                 new Decimal(params.amountIn),
                 routes,
@@ -59,6 +59,24 @@ export const swapQuoteService = async (params: SwapQuoteRequestType, provider: J
         }
 
         const dexConfig = RouteJsonRpcProvider.getDexConfig();
+
+        let route: QuoteRouteView | undefined;
+        try {
+            route = await buildQuoteRouteView(
+                RouteJsonRpcProvider as AllRoute<AllDexIdTypes>,
+                finalRoutes,
+                new Decimal(params.amountIn),
+                hopAmountsOut ?? [],
+                isNativeIn,
+                isNativeOut,
+                provider,
+                network
+            );
+            console.log(`    [QUOTE_SVC:ROUTE] ${route.summary}`);
+        } catch (error: any) {
+            console.warn(`    [QUOTE_SVC:ROUTE] Route view could not be built (non-fatal):`, error?.message);
+        }
+
         return {
             tokenA: params.tokenA,
             tokenB: params.tokenB,
@@ -66,6 +84,7 @@ export const swapQuoteService = async (params: SwapQuoteRequestType, provider: J
             amountOut: amountOut,
             tokenPrice: tokenPrice.toString(),
             routePlan: finalRoutes,
+            route,
             dexId: params.dexId,
             dexFactory: dexConfig.factoryAddress,
             isNativeIn,
@@ -87,6 +106,130 @@ export const swapQuoteService = async (params: SwapQuoteRequestType, provider: J
     }
 
 }
+
+export interface QuoteRouteToken {
+    address: string;
+    symbol: string | null;
+    decimals: number | null;
+}
+
+export interface QuoteRouteHop {
+    hop: number;
+    dexId: string;
+    dexName: string;
+    poolAddress: string;
+    fee: number;
+    tokenIn: QuoteRouteToken;
+    tokenOut: QuoteRouteToken;
+    amountIn: string; // raw base units
+    amountOut: string; // raw base units
+    amountInFormatted: string | null; // human units, null if decimals unknown
+    amountOutFormatted: string | null;
+    percent: number; // share of the input routed through this hop (single-path routing: always 100)
+}
+
+export interface QuoteRouteView {
+    path: QuoteRouteToken[]; // tokens in swap order, e.g. ETH -> USDC -> HIGHER
+    hops: QuoteRouteHop[];
+    summary: string; // e.g. "ETH → USDC (Uniswap V4) → HIGHER (Uniswap V3)"
+}
+
+const formatRawAmount = (raw: Decimal, decimals: number | null): string | null => {
+    if (decimals === null) return null;
+    return raw.div(new Decimal(10).pow(decimals)).toFixed();
+};
+
+/**
+ * Builds the human-readable route (token path, DEX per hop, per-hop amounts) shown with a quote.
+ * Uses the per-hop amounts already simulated for the quote, so it adds no swap simulations;
+ * token metadata comes from the mint cache, falling back to an on-chain read.
+ */
+const buildQuoteRouteView = async (
+    allRoute: AllRoute<AllDexIdTypes>,
+    routePlan: DeserializeRoutePlan<AllDexIdTypes>[],
+    amountIn: Decimal,
+    hopAmountsOut: Decimal[],
+    isNativeIn: boolean,
+    isNativeOut: boolean,
+    provider: JsonRpcProvider,
+    network: NetworkType
+): Promise<QuoteRouteView> => {
+    const chainConfig = allRoute.chainConfig;
+    const wrapped = chainConfig.wrappedNativeTokenAddress.toLowerCase();
+    const nativeToken: QuoteRouteToken = {
+        address: chainConfig.nativeTokenAddress,
+        symbol: chainConfig.nativeTokenSymbol || "ETH",
+        decimals: 18,
+    };
+
+    const tokenMeta = new Map<string, QuoteRouteToken>();
+    const addresses = Array.from(new Set(routePlan.flatMap((r) => [r.tokenA.toLowerCase(), r.tokenB.toLowerCase()])));
+    await Promise.all(addresses.map(async (address) => {
+        try {
+            const details: any = await getTokenDetailsService(address, provider, network);
+            tokenMeta.set(address, {
+                address: details?.address || details?.contractAddress || address,
+                symbol: details?.symbol ?? null,
+                decimals: typeof details?.decimals === "number" ? details.decimals : null,
+            });
+        } catch {
+            tokenMeta.set(address, { address, symbol: null, decimals: null });
+        }
+    }));
+
+    // Show the native token where the user actually sends/receives it instead of WETH
+    const displayToken = (address: string, isFirst: boolean, isLast: boolean): QuoteRouteToken => {
+        const lower = address.toLowerCase();
+        if (lower === wrapped && ((isFirst && isNativeIn) || (isLast && isNativeOut))) {
+            return nativeToken;
+        }
+        return tokenMeta.get(lower) ?? { address, symbol: null, decimals: null };
+    };
+
+    const dexNames = new Map<string, string>();
+    const dexName = (dexId: string): string => {
+        if (!dexNames.has(dexId)) {
+            try {
+                const RouteClass = allRoute.getRouteProviderByDexId(dexId);
+                dexNames.set(dexId, new RouteClass(provider, allRoute.cache).getDexConfig().name);
+            } catch {
+                dexNames.set(dexId, dexId);
+            }
+        }
+        return dexNames.get(dexId)!;
+    };
+
+    let hopAmountIn = amountIn;
+    const hops: QuoteRouteHop[] = routePlan.map((r, i) => {
+        const tokenIn = displayToken(r.tokenA, i === 0, false);
+        const tokenOut = displayToken(r.tokenB, false, i === routePlan.length - 1);
+        const hopAmountOut = hopAmountsOut[i] ?? new Decimal(0);
+        const hop: QuoteRouteHop = {
+            hop: i + 1,
+            dexId: r.dexId,
+            dexName: dexName(r.dexId),
+            poolAddress: r.poolAddress,
+            fee: r.fee,
+            tokenIn,
+            tokenOut,
+            amountIn: hopAmountIn.toFixed(0),
+            amountOut: hopAmountOut.toFixed(0),
+            amountInFormatted: formatRawAmount(hopAmountIn, tokenIn.decimals),
+            amountOutFormatted: formatRawAmount(hopAmountOut, tokenOut.decimals),
+            percent: 100,
+        };
+        hopAmountIn = hopAmountOut;
+        return hop;
+    });
+
+    const path = hops.length > 0 ? [hops[0].tokenIn, ...hops.map((h) => h.tokenOut)] : [];
+    const label = (t: QuoteRouteToken) => t.symbol || t.address;
+    const summary = hops.length > 0
+        ? [label(hops[0].tokenIn), ...hops.map((h) => `${label(h.tokenOut)} (${h.dexName})`)].join(" → ")
+        : "";
+
+    return { path, hops, summary };
+};
 
 export const swapService = async (params: SwapRequestType, provider: JsonRpcProvider, network: NetworkType) => {
     try {
@@ -137,7 +280,7 @@ export const swapService = async (params: SwapRequestType, provider: JsonRpcProv
 
 
 export const tokenList = async (provider: JsonRpcProvider, network: NetworkType) => {
-    const router = getChainAllRoute(network ?? "0G")
+    const router = getChainAllRoute(network ?? "BASE")
     const cache = await initAndGetCache()
     const routeInstance = new router(provider, cache)
 

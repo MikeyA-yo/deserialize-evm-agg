@@ -24,6 +24,35 @@ async function setupApp(routes) {
     // Middleware setup
     app.use((0, cors_1.default)());
     app.use(express_1.default.json());
+    // Comprehensive HTTP Request & Response Logging Middleware
+    app.use((req, res, next) => {
+        const startTime = Date.now();
+        const requestId = Math.random().toString(36).substring(2, 8);
+        const method = req.method;
+        const url = req.originalUrl || req.url;
+        console.log(`\n======================================================`);
+        console.log(`📥 [HTTP IN #${requestId}] ${method} ${url}`);
+        if (req.headers["origin"]) {
+            console.log(`   ├── Origin: ${req.headers["origin"]}`);
+        }
+        if (Object.keys(req.params || {}).length > 0) {
+            console.log(`   ├── Params:`, req.params);
+        }
+        if (Object.keys(req.query || {}).length > 0) {
+            console.log(`   ├── Query:`, req.query);
+        }
+        if (req.body && Object.keys(req.body).length > 0) {
+            console.log(`   └── Body:`, JSON.stringify(req.body, null, 2));
+        }
+        res.on("finish", () => {
+            const duration = Date.now() - startTime;
+            const status = res.statusCode;
+            const icon = status < 400 ? "✅" : "❌";
+            console.log(`${icon} [HTTP OUT #${requestId}] ${method} ${url} -> Status ${status} (${duration}ms)`);
+            console.log(`======================================================\n`);
+        });
+        next();
+    });
     // Swagger documentation setup
     const swaggerSpec = (0, swagger_jsdoc_1.default)(swagger_config_1.swaggerOptions);
     app.use('/api-docs', swagger_ui_express_1.default.serve, swagger_ui_express_1.default.setup(swaggerSpec, {

@@ -13,7 +13,7 @@ exports.wait = exports.UniswapV3QuoteCalculator = exports.ERC20_ABI = exports.cr
 const ethers_1 = require("ethers");
 const createJsonRpcProvider = (rpcUrl, chainId) => {
     const request = new ethers_1.ethers.FetchRequest(rpcUrl);
-    request.timeout = 10000;
+    request.timeout = 25000;
     return new ethers_1.ethers.JsonRpcProvider(request, chainId, {
         staticNetwork: true,
         batchMaxCount: 1,

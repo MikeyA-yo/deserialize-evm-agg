@@ -83,7 +83,7 @@ export type SwapRequestType = z.infer<typeof SwapRequestSchema>["body"]
 export const TokenPriceRequestSchema = z.object({
     params: z.object({
         tokenAddress: z.string(),
-        chain: z.string().optional().default("0G"),
+        chain: z.string().optional().default("BASE"),
     }),
 });
 
@@ -93,7 +93,7 @@ export type TokenPriceRequestType = z.infer<typeof TokenPriceRequestSchema>["par
 export const TokenDetailsRequestSchema = z.object({
     params: z.object({
         tokenAddress: z.string(),
-        chain: z.string().optional().default("0G"),
+        chain: z.string().optional().default("BASE"),
     }),
 });
 

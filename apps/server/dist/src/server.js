@@ -49,6 +49,11 @@ const config_1 = require("./config");
     // Handle process signals
     process.on("SIGINT", exitHandler); // Ctrl+C
     process.on("SIGTERM", exitHandler); // Termination signal (e.g., from Docker)
-    process.on("uncaughtException", unexpectedErrorHandler);
-    process.on("unhandledRejection", unexpectedErrorHandler);
+    process.on("uncaughtException", async (error) => {
+        console.error("💥 [FATAL UNCAUGHT EXCEPTION]", error);
+        await exitHandler();
+    });
+    process.on("unhandledRejection", (reason) => {
+        console.error("⚠️ [UNHANDLED REJECTION] (Server continuing):", reason);
+    });
 })();
