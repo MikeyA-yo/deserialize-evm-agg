@@ -5,7 +5,7 @@ import { DexCache } from "@deserialize-evm-agg/cache";
 import { ChainConfig, DexConfig } from "./UniswapV3Calculator";
 import { BaseV2QuoteCalculator, PairData, V2DexConfig } from "./BaseV2Calculator";
 import { DeserializeRoutePlan, IRoute, SwapQuoteParamWithEdgeData, SwapQuoteParamWithEdgeDataString } from "./IRoute";
-import { transformRoutePlanToIPath } from "./utils";
+import { rawSwapImpactCost, transformRoutePlanToIPath, usdReferencePrice } from "./utils";
 import { createSwapTX } from "@deserialize-evm-agg/swap-contract-sdk";
 import { NetworkType } from "./constants";
 import { RouteConstructor } from "./v3Route";
@@ -247,12 +247,15 @@ export class BaseV2Route<DexIdTypes> implements IRoute<PairData, DexIdTypes> {
             fee: data.fee,
             pool: {
                 pairAddress: data.pairAddress,
+                poolAddress: data.pairAddress,
                 token0: data.token0,
                 token1: data.token1,
                 reserve0: data.reserve0,
                 reserve1: data.reserve1,
                 fee: data.fee,
                 blockTimestampLast: data.blockTimestampLast,
+                token0PriceUsd: priceUsdc,
+                token1PriceUsd: rPriceUsdc,
             },
         };
 
@@ -307,29 +310,19 @@ export class BaseV2Route<DexIdTypes> implements IRoute<PairData, DexIdTypes> {
 
     getFunctionToMutateEdgeCost = <T extends EdgeData>(): FunctionToMutateTheEdgeCostType<T> => {
         const func: FunctionToMutateTheEdgeCostType<any> = (params, e) => {
-            let swapAmount = (params.key.key * params.key.keyRate) / params.priceUsdc;
-            swapAmount = swapAmount / Math.pow(10, Math.abs(params.key.keyDecimal));
-            swapAmount = swapAmount * Math.pow(10, Math.abs(params.tokenFromDecimals));
-
             const rawPool = typeof e.edgeData.pool === "string" ? JSON.parse(e.edgeData.pool) : e.edgeData.pool;
             const pool = this.formatPool(rawPool);
 
-            const res = this.calculator.getAmountOut({
-                pool,
-                aToB: e.edgeData.aToB,
-                amountInFormattedInDecimal: new Decimal(swapAmount),
-            });
-
-            if (!res || res.amountOut.lte(0)) {
-                return 100;
-            }
-
-            const amountIn = new Decimal(swapAmount);
-            const amountOut = res.amountOut;
-            const amountOutInTokenA = amountOut.div(params.price || 1);
-            const swapImpact = amountIn.sub(amountOutInTokenA).div(amountIn).mul(100).toNumber();
-
-            return Math.max(0, swapImpact);
+            return rawSwapImpactCost(
+                params,
+                (amountInRaw) =>
+                    this.calculator.getAmountOut({
+                        pool,
+                        aToB: e.edgeData.aToB,
+                        amountInFormattedInDecimal: amountInRaw,
+                    }).amountOut,
+                usdReferencePrice(pool, e.edgeData.aToB)
+            );
         };
         return func;
     };
@@ -439,6 +432,12 @@ export class BaseV2Route<DexIdTypes> implements IRoute<PairData, DexIdTypes> {
             });
         });
 
+        // Pad to the token map size so no node is left undefined (holes break graph traversal).
+        const targetSize = tokenBiMap.toArray().length;
+        for (let i = 0; i < Math.max(targetSize, merged.length); i++) {
+            if (!merged[i]) merged[i] = [];
+        }
+
         return merged;
     }
 
@@ -453,23 +452,41 @@ export class BaseV2Route<DexIdTypes> implements IRoute<PairData, DexIdTypes> {
         poolData: PairData[],
         _provider?: JsonRpcProvider
     ): Promise<Graph> => {
-        return await this.buildGraphFromPools(poolData, tokenBiMap, _provider || this.provider);
+        const refreshedEdges = await this.buildGraphFromPools(poolData, tokenBiMap, _provider || this.provider);
+        return this.mergeGraphs(graph, refreshedEdges, tokenBiMap);
     };
 
+    /**
+     * Returns every cached pair with live reserves (falls back to the cached pair if the read fails).
+     */
     getAllExistingPoolData = async (_provider?: JsonRpcProvider): Promise<PairData[]> => {
         const biMap = await this.getTokenBiMap<PairData>(_provider);
-        return (biMap.data as PairData[]) || [];
+        const cachedPairs = (biMap.data as PairData[]) || [];
+
+        return await Promise.all(
+            cachedPairs.map(async (pair) => {
+                try {
+                    return await this.calculator.getPairData(pair.pairAddress);
+                } catch (error) {
+                    console.error(`[V2:REFRESH_ERR] Error fetching reserves for ${pair.pairAddress}:`, error);
+                    return pair;
+                }
+            })
+        );
     };
 
     formatPool = (pool: any): PairData => {
         return {
             pairAddress: pool.pairAddress || pool.poolAddress,
+            poolAddress: pool.pairAddress || pool.poolAddress,
             token0: pool.token0,
             token1: pool.token1,
             reserve0: pool.reserve0?.toString?.() || "0",
             reserve1: pool.reserve1?.toString?.() || "0",
             blockTimestampLast: pool.blockTimestampLast,
             fee: pool.fee || this.dexConfig.feeBps,
+            token0PriceUsd: pool.token0PriceUsd,
+            token1PriceUsd: pool.token1PriceUsd,
         };
     };
 
@@ -479,7 +496,10 @@ export class BaseV2Route<DexIdTypes> implements IRoute<PairData, DexIdTypes> {
             return cachedPrice;
         }
         const price = await this.calculator.getSureTokenPrice(tokenAddress);
-        await this.cache.setPriceToCache(tokenAddress, price);
+        // Only cache real prices; the price cache is shared with every other DEX route.
+        if (price > 0) {
+            await this.cache.setPriceToCache(tokenAddress, price);
+        }
         return price;
     };
 

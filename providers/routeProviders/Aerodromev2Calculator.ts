@@ -125,6 +125,8 @@ export interface AerodromePoolData {
     reserve1: string;
     fee: number; // in basis points (e.g. 30 = 0.3%, 5 = 0.05%)
     blockTimestampLast?: number;
+    token0PriceUsd?: number; // set on graph edges, used as the edge cost reference price
+    token1PriceUsd?: number;
 }
 
 export interface AerodromePoolInfo {
@@ -335,7 +337,9 @@ export class AerodromeV2QuoteCalculator {
     }
 
     /**
-     * Calculates the output amount using analytical curve math (volatile or stable)
+     * Calculates the output amount using analytical curve math (volatile or stable).
+     * amountInFormattedInDecimal is in raw base units (wei), matching the V3 calculators.
+     * amountOut is returned in raw base units of tokenOut.
      */
     public getAmountOut(params: {
         pool: AerodromePoolData;
@@ -346,7 +350,7 @@ export class AerodromeV2QuoteCalculator {
         const tokenIn = aToB ? pool.token0 : pool.token1;
         const tokenOut = aToB ? pool.token1 : pool.token0;
 
-        const rawAmountIn = amountInFormattedInDecimal.mul(new Decimal(10).pow(tokenIn.decimals));
+        const rawAmountIn = amountInFormattedInDecimal;
         const feeRate = new Decimal(pool.fee).div(10000);
         const amountInAfterFee = rawAmountIn.mul(new Decimal(1).sub(feeRate));
 
@@ -384,9 +388,9 @@ export class AerodromeV2QuoteCalculator {
             );
         }
 
-        const amountOutFormatted = Decimal.max(0, rawAmountOut.div(new Decimal(10).pow(tokenOut.decimals)));
+        const amountOutRaw = Decimal.max(0, rawAmountOut).floor();
 
-        // Spot price
+        // Spot price (human units of tokenOut per 1 tokenIn)
         let spotPrice = 0;
         if (!pool.stable) {
             const rInHuman = rInRaw.div(new Decimal(10).pow(tokenIn.decimals));
@@ -409,7 +413,7 @@ export class AerodromeV2QuoteCalculator {
         return {
             price: spotPrice,
             amountIn: amountInFormattedInDecimal,
-            amountOut: amountOutFormatted,
+            amountOut: amountOutRaw,
             poolAddress: pool.poolAddress,
             fee: new Decimal(pool.fee),
             stable: pool.stable,
@@ -463,7 +467,32 @@ export class AerodromeV2QuoteCalculator {
     }
 
     /**
-     * Simulates swap execution directly through the pool's on-chain getAmountOut view method
+     * Re-reads reserves and fee for a known pool (used by graph edge refresh).
+     */
+    public async refreshPoolData(pool: AerodromePoolData, provider?: JsonRpcProvider): Promise<AerodromePoolData> {
+        const prov = provider || this.provider;
+        const poolContract = new Contract(pool.poolAddress, AERODROME_V2_POOL_ABI as any, prov);
+        const factory = provider
+            ? new Contract(this.dexConfig.factoryAddress, AERODROME_V2_FACTORY_ABI as any, provider)
+            : this.factoryContract;
+
+        const [reserves, feeRaw] = await Promise.all([
+            poolContract.getReserves(),
+            factory.getFee(pool.poolAddress, pool.stable).catch(() => BigInt(pool.fee)),
+        ]);
+
+        return {
+            ...pool,
+            reserve0: reserves[0].toString(),
+            reserve1: reserves[1].toString(),
+            fee: Number(feeRaw),
+            blockTimestampLast: Number(reserves[2] || 0),
+        };
+    }
+
+    /**
+     * Simulates swap execution directly through the pool's on-chain getAmountOut view method.
+     * amountIn and the returned amountOut are raw base-unit integer strings (wei).
      */
     public async simulateTransaction(
         tokenIn: string,
@@ -475,53 +504,52 @@ export class AerodromeV2QuoteCalculator {
         const prov = provider || this.provider;
         const normIn = ethers.getAddress(tokenIn);
         const normOut = ethers.getAddress(tokenOut);
+        const rawAmountIn = new Decimal(amountIn).floor();
 
         try {
             const poolContract = new Contract(poolAddress, AERODROME_V2_POOL_ABI as any, prov);
-            const tokenInMeta = await this.getTokenMetadata(normIn, prov);
-            const tokenOutMeta = await this.getTokenMetadata(normOut, prov);
+            const rawAmountOut = await poolContract.getAmountOut(BigInt(rawAmountIn.toFixed(0)), normIn);
 
-            const rawAmountIn = new Decimal(amountIn)
-                .mul(new Decimal(10).pow(tokenInMeta.decimals))
-                .toFixed(0);
-
-            const rawAmountOut = await poolContract.getAmountOut(BigInt(rawAmountIn), normIn);
-
-            const amountOutFormatted = new Decimal(rawAmountOut.toString())
-                .div(new Decimal(10).pow(tokenOutMeta.decimals))
-                .toString();
-
-            return { amountOut: amountOutFormatted, pool: poolAddress };
+            return { amountOut: rawAmountOut.toString(), pool: poolAddress };
         } catch {
             // Fallback to analytical calculation
-            const poolContract = new Contract(poolAddress, AERODROME_V2_POOL_ABI as any, prov);
-            const [reserves, isStable, token0Address] = await Promise.all([
-                poolContract.getReserves().catch(() => [0n, 0n]),
-                poolContract.stable().catch(() => false),
-                poolContract.token0().catch(() => normIn),
-            ]);
+            try {
+                const poolContract = new Contract(poolAddress, AERODROME_V2_POOL_ABI as any, prov);
+                const factory = provider
+                    ? new Contract(this.dexConfig.factoryAddress, AERODROME_V2_FACTORY_ABI as any, provider)
+                    : this.factoryContract;
+                const [reserves, isStable, token0Address] = await Promise.all([
+                    poolContract.getReserves(),
+                    poolContract.stable(),
+                    poolContract.token0(),
+                ]);
+                const feeRaw = await factory.getFee(poolAddress, isStable).catch(() => (isStable ? 5n : 30n));
 
-            const aToB = normIn.toLowerCase() === token0Address.toLowerCase();
-            const tokenInMeta = await this.getTokenMetadata(normIn, prov);
-            const tokenOutMeta = await this.getTokenMetadata(normOut, prov);
+                const aToB = normIn.toLowerCase() === token0Address.toLowerCase();
+                const tokenInMeta = await this.getTokenMetadata(normIn, prov);
+                const tokenOutMeta = await this.getTokenMetadata(normOut, prov);
 
-            const poolData: AerodromePoolData = {
-                poolAddress,
-                token0: aToB ? tokenInMeta : tokenOutMeta,
-                token1: aToB ? tokenOutMeta : tokenInMeta,
-                stable: isStable,
-                reserve0: aToB ? reserves[0].toString() : reserves[1].toString(),
-                reserve1: aToB ? reserves[1].toString() : reserves[0].toString(),
-                fee: isStable ? 5 : 30,
-            };
+                const poolData: AerodromePoolData = {
+                    poolAddress,
+                    token0: aToB ? tokenInMeta : tokenOutMeta,
+                    token1: aToB ? tokenOutMeta : tokenInMeta,
+                    stable: isStable,
+                    reserve0: reserves[0].toString(),
+                    reserve1: reserves[1].toString(),
+                    fee: Number(feeRaw),
+                };
 
-            const quote = this.getAmountOut({
-                pool: poolData,
-                aToB,
-                amountInFormattedInDecimal: new Decimal(amountIn),
-            });
+                const quote = this.getAmountOut({
+                    pool: poolData,
+                    aToB,
+                    amountInFormattedInDecimal: rawAmountIn,
+                });
 
-            return { amountOut: quote.amountOut.toString(), pool: poolAddress };
+                return { amountOut: quote.amountOut.toFixed(0), pool: poolAddress };
+            } catch (error) {
+                console.error(`[AERO_V2:SIMULATE_ERR] Simulation failed for pool ${poolAddress}:`, error);
+                return { amountOut: "0", pool: poolAddress };
+            }
         }
     }
 
@@ -552,12 +580,8 @@ export class AerodromeV2QuoteCalculator {
             if (stablePools.length > 0) {
                 const bestPool = stablePools.reduce((a, b) => (a.liquidity.gt(b.liquidity) ? a : b));
                 const aToB = bestPool.poolData.token0.address.toLowerCase() === normalized.toLowerCase();
-                const quote = this.getAmountOut({
-                    pool: bestPool.poolData,
-                    aToB,
-                    amountInFormattedInDecimal: new Decimal(1),
-                });
-                if (quote.amountOut.gt(0)) return quote.amountOut.toNumber();
+                const quote = this.quoteOneToken(bestPool.poolData, aToB);
+                if (quote.gt(0)) return quote.toNumber();
             }
         }
 
@@ -567,19 +591,30 @@ export class AerodromeV2QuoteCalculator {
             if (nativePools.length > 0) {
                 const bestPool = nativePools.reduce((a, b) => (a.liquidity.gt(b.liquidity) ? a : b));
                 const aToB = bestPool.poolData.token0.address.toLowerCase() === normalized.toLowerCase();
-                const quote = this.getAmountOut({
-                    pool: bestPool.poolData,
-                    aToB,
-                    amountInFormattedInDecimal: new Decimal(1),
-                });
+                const quote = this.quoteOneToken(bestPool.poolData, aToB);
                 const nativePriceUsd = await this.getSureTokenPrice(wrappedAddress);
-                if (quote.amountOut.gt(0) && nativePriceUsd > 0) {
-                    return quote.amountOut.mul(nativePriceUsd).toNumber();
+                if (quote.gt(0) && nativePriceUsd > 0) {
+                    return quote.mul(nativePriceUsd).toNumber();
                 }
             }
         }
 
-        return 1;
+        // Unknown price. Do not invent $1: it is cached and averaged into other DEXes' prices.
+        return 0;
+    }
+
+    /**
+     * Human amount of tokenOut received for exactly 1 whole tokenIn.
+     */
+    private quoteOneToken(pool: AerodromePoolData, aToB: boolean): Decimal {
+        const tokenIn = aToB ? pool.token0 : pool.token1;
+        const tokenOut = aToB ? pool.token1 : pool.token0;
+        const quote = this.getAmountOut({
+            pool,
+            aToB,
+            amountInFormattedInDecimal: new Decimal(10).pow(tokenIn.decimals),
+        });
+        return quote.amountOut.div(new Decimal(10).pow(tokenOut.decimals));
     }
 
     public formatPool(pool: any): AerodromePoolData {
@@ -592,6 +627,8 @@ export class AerodromeV2QuoteCalculator {
             reserve1: pool.reserve1 || "0",
             fee: Number(pool.fee || (pool.stable ? 5 : 30)),
             blockTimestampLast: pool.blockTimestampLast ? Number(pool.blockTimestampLast) : undefined,
+            token0PriceUsd: pool.token0PriceUsd,
+            token1PriceUsd: pool.token1PriceUsd,
         };
     }
 }

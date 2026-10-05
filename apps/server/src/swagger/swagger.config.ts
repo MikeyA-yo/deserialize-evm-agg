@@ -160,6 +160,9 @@ export const swaggerOptions: Options = {
               },
               description: 'Ordered list of swap steps to execute',
             },
+            route: {
+              $ref: '#/components/schemas/QuoteRoute',
+            },
             dexId: {
               type: 'string',
               description: 'DEX identifier',
@@ -180,6 +183,40 @@ export const swaggerOptions: Options = {
               description: 'Whether output token is native currency',
               example: false,
             },
+          },
+        },
+        QuoteRouteToken: {
+          type: 'object',
+          properties: {
+            address: { type: 'string', example: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' },
+            symbol: { type: 'string', nullable: true, example: 'ETH' },
+            decimals: { type: 'integer', nullable: true, example: 18 },
+          },
+        },
+        QuoteRouteHop: {
+          type: 'object',
+          properties: {
+            hop: { type: 'integer', description: '1-based hop index', example: 1 },
+            dexId: { type: 'string', example: 'UNISWAP_V4_BASE' },
+            dexName: { type: 'string', example: 'Uniswap V4' },
+            poolAddress: { type: 'string', description: 'Pool address (bytes32 poolId for Uniswap V4)' },
+            fee: { type: 'number', description: 'Pool fee as stored by the DEX route (units differ per DEX)', example: 500 },
+            tokenIn: { $ref: '#/components/schemas/QuoteRouteToken' },
+            tokenOut: { $ref: '#/components/schemas/QuoteRouteToken' },
+            amountIn: { type: 'string', description: 'Raw base units', example: '10000000000000000' },
+            amountOut: { type: 'string', description: 'Raw base units', example: '27047401' },
+            amountInFormatted: { type: 'string', nullable: true, description: 'Human units (null if decimals unknown)', example: '0.01' },
+            amountOutFormatted: { type: 'string', nullable: true, example: '27.047401' },
+            percent: { type: 'number', description: 'Share of the input routed through this hop (single-path routing, always 100)', example: 100 },
+          },
+        },
+        QuoteRoute: {
+          type: 'object',
+          description: 'Human-readable route for display. Omitted if it could not be built; routePlan is unaffected.',
+          properties: {
+            path: { type: 'array', items: { $ref: '#/components/schemas/QuoteRouteToken' }, description: 'Tokens in swap order' },
+            hops: { type: 'array', items: { $ref: '#/components/schemas/QuoteRouteHop' } },
+            summary: { type: 'string', example: 'ETH → USDC (Uniswap V4)' },
           },
         },
         PartnerFees: {

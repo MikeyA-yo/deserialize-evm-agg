@@ -12,6 +12,7 @@ This document specifies the API endpoints, on-chain contracts, routing infrastru
 | **DEX Adapters** | **Active & Configured** | Adapters registered for Uniswap V3, PancakeSwap V3, and Aerodrome SlipStream. |
 | **Pricing Engine** | **Operational** | Dynamic price queries across Base tokens (`GET /base/tokenPrice/:tokenAddress`). |
 | **Quote Engine** | **Operational** | Finds optimal routes across Base DEX pools (`POST /base/quote`). |
+| **Route Visualization** | **Available** | Every quote includes a `route` object (token path, DEX per hop, per-hop amounts) for rendering the swap route (§3.4.1). |
 | **Swap TX Generator** | **Operational** | Returns ready-to-sign EVM transaction payloads (`POST /base/swap`). |
 | **Auto-Discovery** | **Active** | Unknown tokens are dynamically resolved and cached into the Redis graph upon query. |
 
@@ -214,12 +215,118 @@ Calculates best execution route and expected output amount across all registered
       "fee": 100
     }
   ],
+  "route": {
+    "path": [
+      { "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", "symbol": "ETH", "decimals": 18 },
+      { "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "symbol": "USDC", "decimals": 6 }
+    ],
+    "hops": [
+      {
+        "hop": 1,
+        "dexId": "PANCAKE_V3_BASE",
+        "dexName": "PancakeSwap V3",
+        "poolAddress": "0x72AB388E2E2F6FaceF59E3C3FA2C4E29011c2D38",
+        "fee": 100,
+        "tokenIn": { "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", "symbol": "ETH", "decimals": 18 },
+        "tokenOut": { "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "symbol": "USDC", "decimals": 6 },
+        "amountIn": "1000000000000000000",
+        "amountOut": "2698061156",
+        "amountInFormatted": "1",
+        "amountOutFormatted": "2698.061156",
+        "percent": 100
+      }
+    ],
+    "summary": "ETH → USDC (PancakeSwap V3)"
+  },
   "dexId": "ALL_BASE",
   "dexFactory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
   "isNativeIn": true,
   "isNativeOut": false
 }
 ```
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `amountOut` | `string` | Expected output in atomic units of `tokenB`. Large values may come back in exponent form (e.g. `"1.099e+21"`). Parse with a decimal library (e.g. `decimal.js`, `bignumber.js`), not `BigInt`. |
+| `routePlan` | `array` | Machine route consumed by `POST /swap`. Do not modify it. |
+| `route` | `object` *(optional)* | Human-readable route for display (§3.4.1). It is omitted if the server could not build it; the quote is still valid. |
+
+#### 3.4.1 `route`: Route Visualization Data
+
+`route` describes the path the quote takes, for a KyberSwap-style "Route" panel (`ETH → USDC → HIGHER`, with the DEX used on each hop). Its amounts come from the same simulation as `amountOut`, so the last hop's `amountOut` equals the quote's `amountOut`.
+
+**TypeScript types:**
+```typescript
+interface QuoteRouteToken {
+  address: string;          // may be lowercase; compare case-insensitively
+  symbol: string | null;    // null if metadata could not be read
+  decimals: number | null;  // null if metadata could not be read
+}
+
+interface QuoteRouteHop {
+  hop: number;                       // 1-based, in swap order
+  dexId: string;                     // e.g. "UNISWAP_V4_BASE"
+  dexName: string;                   // display name, e.g. "Uniswap V4"
+  poolAddress: string;               // 20-byte address, or a 32-byte poolId for Uniswap V4
+  fee: number;                       // raw DEX fee value; units differ per DEX (see fee table)
+  tokenIn: QuoteRouteToken;
+  tokenOut: QuoteRouteToken;
+  amountIn: string;                  // atomic units (integer string)
+  amountOut: string;                 // atomic units (integer string)
+  amountInFormatted: string | null;  // human units, e.g. "0.01"; null if decimals unknown
+  amountOutFormatted: string | null; // human units, e.g. "27.04861"
+  percent: number;                   // share of the trade through this hop; always 100 today
+}
+
+interface QuoteRoute {
+  path: QuoteRouteToken[];  // tokens in order: path[0] = input, path[path.length - 1] = output
+  hops: QuoteRouteHop[];    // hops.length === path.length - 1
+  summary: string;          // ready-made text, e.g. "ETH → USDC (Uniswap V4) → HIGHER (Uniswap V3)"
+}
+
+interface QuoteResponse {
+  tokenA: string;
+  tokenB: string;
+  amountIn: string;
+  amountOut: string;
+  tokenPrice: string;
+  routePlan: unknown[];
+  route?: QuoteRoute;
+  dexId: string;
+  dexFactory: string;
+  isNativeIn: boolean;
+  isNativeOut: boolean;
+}
+```
+
+**Field rules:**
+- **Native ETH**: when the user sells or buys native ETH, the first or last token is shown as `ETH` (`0xEeee…EEeE`) even though the pool trades WETH. Display it as is.
+- **Chained amounts**: each hop's `amountIn` equals the previous hop's `amountOut`.
+- **Formatted amounts** are full-precision decimal strings. Round them for display (e.g. 6 significant digits). If one is `null`, show the raw amount or hide it.
+- **`percent`**: the router only returns single-path routes today, so it is always `100`. Still render from `percent` rather than hardcoding, so split routes (e.g. 60% / 40%) work later without frontend changes.
+- **`poolAddress`** for Uniswap V4 is a 32-byte pool id, not a contract address. Link V4 pools to the Uniswap app or explorer by pool id, or don't link them.
+- **Unknown symbol** (`symbol === null`): fall back to a shortened address (`0x0578…0ffe`).
+
+**Converting `fee` to a percentage** (units differ per DEX):
+
+| `dexId` | `fee` unit | Example | Display |
+| :--- | :--- | :--- | :--- |
+| `UNISWAP_V3_BASE`, `PANCAKE_V3_BASE`, `UNISWAP_V4_BASE` | hundredths of a bip (1e-6) | `500` | `0.05%` (`fee / 10_000`) |
+| `UNISWAP_V2_BASE`, `PANCAKE_V2_BASE`, `AERODROME_V2_BASE` | basis points (1e-4) | `30` | `0.3%` (`fee / 100`) |
+| `AERODROME_V3_BASE` | not a reliable fee (may be the pool's tick spacing) | `100` | don't show a percentage |
+
+```typescript
+const FEE_PIPS = ["UNISWAP_V3_BASE", "PANCAKE_V3_BASE", "UNISWAP_V4_BASE"];
+const FEE_BPS = ["UNISWAP_V2_BASE", "PANCAKE_V2_BASE", "AERODROME_V2_BASE"];
+
+function feePercent(hop: QuoteRouteHop): string | null {
+  if (FEE_PIPS.includes(hop.dexId)) return `${hop.fee / 10_000}%`;
+  if (FEE_BPS.includes(hop.dexId)) return `${hop.fee / 100}%`;
+  return null; // AERODROME_V3_BASE or unknown DEX: hide the fee
+}
+```
+
+**`dexName` values on Base:** `Uniswap V3`, `PancakeSwap V3`, `Aerodrome V3`, `Uniswap V2`, `PancakeSwap V2`, `Aerodrome V2`, `Uniswap V4`. Map `dexId` to a logo on the frontend; the API returns no logo URLs.
 
 ---
 
@@ -266,7 +373,7 @@ Constructs the raw EVM transaction array (`transactions`) for the user's wallet 
 | Field | Type | Required | Description |
 | :--- | :--- | :---: | :--- |
 | `publicKey` | `string` | Yes | User's wallet address. |
-| `quote` | `object` | Yes | The entire quote object returned from `POST /quote`. |
+| `quote` | `object` | Yes | The entire quote object returned from `POST /quote`. Sending it unchanged, including `route`, is fine: the server ignores `route` and builds the transaction from `routePlan`. |
 | `slippage` | `number` | Yes | Slippage tolerance percentage (0.1 to 10.0). |
 | `partnerFees` | `object` | No | Optional integrator fee (`fee` percentage, `recipient` address). |
 
@@ -312,8 +419,36 @@ const quoteRes = await fetch("http://localhost:3735/base/quote", {
     dexId: "ALL_BASE"
   })
 });
-const quote = await quoteRes.json();
+const quote: QuoteResponse = await quoteRes.json();
 ```
+
+### Step 1b: Show the Route (optional)
+Render `quote.route` beside the quote, the way KyberSwap shows its "Route" panel. Types and field rules are in §3.4.1.
+
+```tsx
+function RouteView({ route }: { route?: QuoteRoute }) {
+  if (!route || route.hops.length === 0) return null; // route is optional
+  const label = (t: QuoteRouteToken) => t.symbol ?? `${t.address.slice(0, 6)}…${t.address.slice(-4)}`;
+
+  return (
+    <div className="route">
+      <div className="route-path">{route.path.map(label).join(" → ")}</div>
+      {route.hops.map((hop) => (
+        <div key={hop.hop} className="route-hop">
+          <span>{hop.percent}%</span>
+          <span>{label(hop.tokenIn)} → {label(hop.tokenOut)}</span>
+          <span>{hop.dexName}{feePercent(hop) ? ` · ${feePercent(hop)}` : ""}</span>
+          <span>
+            {hop.amountInFormatted ?? hop.amountIn} → {hop.amountOutFormatted ?? hop.amountOut}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+If you only need one line of text, use `route.summary` (e.g. `"ETH → USDC (Uniswap V4) → HIGHER (Uniswap V3)"`). Re-render the panel on every new quote: the route can change between quotes for the same pair.
 
 ### Step 2: Request Transaction Payloads
 ```typescript
@@ -413,8 +548,8 @@ When the frontend reports that "something isn't working", check the backend term
   ```
 
 ### 2. Calling `/swap` instead of `/base/swap`
-- **Cause:** Calling the bare root path `/swap` without specifying `/base/swap`.
-- **Resolution:** Always use `POST /base/swap` (or include `"chain": "BASE"` in the body).
+- **Behavior:** Bare paths (`/quote`, `/swap`, `/tokenPrice/...`, `/tokenDetails/...`, `/tokenList`) now default to **Base** when no chain is given. Earlier builds defaulted to 0G.
+- **Recommendation:** Still use the explicit `/base/...` paths (or `"chain": "BASE"` in the body), so requests don't depend on the server default.
 
 ### 3. Missing `quote` Object in `POST /base/swap`
 - **Cause:** Sending only tokens or amounts instead of the full `quote` object.
@@ -440,4 +575,12 @@ When the frontend reports that "something isn't working", check the backend term
     });
   }
   ```
+
+### 5. `BigInt` throws on `quote.amountOut`
+- **Cause:** Very large outputs (≥ 1e21 atomic units, common for 18-decimal meme tokens) are serialized in exponent form, e.g. `"1.099e+21"`, which `BigInt()` rejects.
+- **Fix:** Parse `amountOut` with a decimal library, or use `route.hops[route.hops.length - 1].amountOut` / `amountOutFormatted`, which are always plain decimal strings.
+
+### 6. Route panel is empty
+- **Cause:** `route` is optional. It is omitted if the server could not build it (e.g. token metadata lookup failed), while the quote itself is still valid.
+- **Fix:** Guard with `if (quote.route)` and hide the panel. Never block the swap on `route`; `POST /swap` only needs `routePlan`.
 

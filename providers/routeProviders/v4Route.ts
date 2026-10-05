@@ -29,6 +29,7 @@ import {
     V4PoolData,
 } from "./BaseV4Calculator";
 import { DexCache } from "@deserialize-evm-agg/cache";
+import { rawSwapImpactCost, usdReferencePrice } from "./utils";
 
 export class BaseV4Route<DexIdTypes> implements IRoute<V4PoolData, DexIdTypes> {
     public name: DexIdTypes;
@@ -262,11 +263,15 @@ export class BaseV4Route<DexIdTypes> implements IRoute<V4PoolData, DexIdTypes> {
             const quote = this.calculator.getAmountOut({
                 pool: wp,
                 aToB: !isReverse,
-                amountInFormattedInDecimal: new Decimal(1),
+                amountInFormattedInDecimal: new Decimal(10).pow(tokenIn.decimals),
             });
 
             const price = quote.price || 0;
-            const priceUsdc = await this.getPrice(tokenIn.address);
+            const [token0PriceUsd, token1PriceUsd] = await Promise.all([
+                this.getPrice(wp.token0.address),
+                this.getPrice(wp.token1.address),
+            ]);
+            const priceUsdc = isReverse ? token1PriceUsd : token0PriceUsd;
 
             const result: SwapQuoteParamWithEdgeData<V4PoolData> = {
                 price,
@@ -276,7 +281,7 @@ export class BaseV4Route<DexIdTypes> implements IRoute<V4PoolData, DexIdTypes> {
                 tokenToReserve: Number(wp.liquidity) || 0,
                 tokenFromDecimals: tokenIn.decimals,
                 tokenToDecimals: tokenOut.decimals,
-                pool: wp,
+                pool: { ...wp, token0PriceUsd, token1PriceUsd },
                 aToB: !isReverse,
                 dexId: this.name as any,
                 poolAddress: wp.poolId,
@@ -310,19 +315,20 @@ export class BaseV4Route<DexIdTypes> implements IRoute<V4PoolData, DexIdTypes> {
             tokenBiMap.setArrayValue(token1.address.toLowerCase());
 
             tokenPoolMap.set(
-                `${token0.address.toLowerCase()}:${fee}:${token1.address.toLowerCase()}`,
+                `${token0.address.toLowerCase()}:${fee}:${pool.poolKey?.currency0 ?? ""}:${token1.address.toLowerCase()}`,
                 poolId
             );
         });
 
-        const graph = await this.buildGraphFromPools(pools, tokenBiMap, this.provider);
+        // Merge the token map first so new edges are built with the merged (cached) indices.
         const existingGraph = await this.getGraph(this.provider, biMap, false);
-        const mergedGraph = this.mergeGraphs(existingGraph, graph, tokenBiMap);
         const mergedTokenBiMap = this.mergeTokenBiMaps(biMap, {
             tokenBiMap,
             tokenPoolMap,
             data: pools,
         });
+        const graph = await this.buildGraphFromPools(pools, mergedTokenBiMap.tokenBiMap, this.provider);
+        const mergedGraph = this.mergeGraphs(existingGraph, graph, mergedTokenBiMap.tokenBiMap);
 
         await this.cache.setDexGraphCache(this.name as any, mergedGraph);
         await this.cache.setDexTokenIndexBiMapCache(this.name as any, mergedTokenBiMap);
@@ -332,29 +338,19 @@ export class BaseV4Route<DexIdTypes> implements IRoute<V4PoolData, DexIdTypes> {
 
     getFunctionToMutateEdgeCost = <T extends EdgeData>(): FunctionToMutateTheEdgeCostType<T> => {
         const func: FunctionToMutateTheEdgeCostType<any> = (params, e) => {
-            let swapAmount = (params.key.key * params.key.keyRate) / params.priceUsdc;
-            swapAmount = swapAmount / Math.pow(10, Math.abs(params.key.keyDecimal));
-            swapAmount = swapAmount * Math.pow(10, Math.abs(params.tokenFromDecimals));
-
             const rawPool = typeof e.edgeData.pool === "string" ? JSON.parse(e.edgeData.pool) : e.edgeData.pool;
             const pool = this.formatPool(rawPool);
 
-            const res = this.calculator.getAmountOut({
-                pool,
-                aToB: e.edgeData.aToB,
-                amountInFormattedInDecimal: new Decimal(swapAmount),
-            });
-
-            if (!res || res.amountOut.lte(0)) {
-                return 100;
-            }
-
-            const amountIn = new Decimal(swapAmount);
-            const amountOut = res.amountOut;
-            const amountOutInTokenA = amountOut.div(params.price || 1);
-            const swapImpact = amountIn.sub(amountOutInTokenA).div(amountIn).mul(100).toNumber();
-
-            return Math.max(0, swapImpact);
+            return rawSwapImpactCost(
+                params,
+                (amountInRaw) =>
+                    this.calculator.getAmountOut({
+                        pool,
+                        aToB: e.edgeData.aToB,
+                        amountInFormattedInDecimal: amountInRaw,
+                    }).amountOut,
+                usdReferencePrice(pool, e.edgeData.aToB)
+            );
         };
         return func;
     };
@@ -454,6 +450,12 @@ export class BaseV4Route<DexIdTypes> implements IRoute<V4PoolData, DexIdTypes> {
             });
         });
 
+        // Pad to the token map size so no node is left undefined (holes break graph traversal).
+        const targetSize = tokenBiMap.toArray().length;
+        for (let i = 0; i < Math.max(targetSize, merged.length); i++) {
+            if (!merged[i]) merged[i] = [];
+        }
+
         return merged;
     }
 
@@ -464,16 +466,31 @@ export class BaseV4Route<DexIdTypes> implements IRoute<V4PoolData, DexIdTypes> {
 
     refreshGraphEdges = async (
         graph: Graph,
-        _tokenBiMap: ArrayBiMap<string>,
-        _poolData: V4PoolData[],
+        tokenBiMap: ArrayBiMap<string>,
+        poolData: V4PoolData[],
         _provider?: JsonRpcProvider
     ): Promise<Graph> => {
-        return graph;
+        const refreshedEdges = await this.buildGraphFromPools(poolData, tokenBiMap, _provider || this.provider);
+        return this.mergeGraphs(graph, refreshedEdges, tokenBiMap);
     };
 
+    /**
+     * Returns every cached pool with live slot0/liquidity (falls back to the cached pool if the read fails).
+     */
     getAllExistingPoolData = async (_provider?: JsonRpcProvider): Promise<V4PoolData[]> => {
         const biMap = await this.getTokenBiMap<V4PoolData>(_provider);
-        return (biMap.data || []) as V4PoolData[];
+        const cachedPools = (biMap.data || []) as V4PoolData[];
+
+        return await Promise.all(
+            cachedPools.map(async (pool) => {
+                try {
+                    return await this.calculator.refreshPoolData(this.formatPool(pool), _provider || this.provider);
+                } catch (error) {
+                    console.error(`[V4:REFRESH_ERR] Error fetching state for ${pool.poolId}:`, error);
+                    return pool;
+                }
+            })
+        );
     };
 
     getPrice = async (tokenAddress: string): Promise<number> => {
@@ -482,7 +499,10 @@ export class BaseV4Route<DexIdTypes> implements IRoute<V4PoolData, DexIdTypes> {
             return cached;
         }
         const price = await this.calculator.getSureTokenPrice(tokenAddress);
-        await this.cache.setPriceToCache(tokenAddress, price);
+        // Only cache real prices; the price cache is shared with every other DEX route.
+        if (price > 0) {
+            await this.cache.setPriceToCache(tokenAddress, price);
+        }
         return price;
     };
 

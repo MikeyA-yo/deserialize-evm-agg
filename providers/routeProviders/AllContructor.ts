@@ -892,6 +892,7 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
     ) => {
         let currentAmountIn = new Decimal(amountFormattedToTokenDecimal);
         const changedPoolList = []
+        const hopAmountsOut: Decimal[] = [] // raw amountOut of each hop, in route order
         for (const plan of routePlan) {
             const RouteProviderClass = this.getRouteProviderByDexId(plan.dexId as string);
             const route = new RouteProviderClass(provider || this.provider, this.cache);
@@ -906,9 +907,10 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
             console.log('this has to be one item or else the logic breaks pools: ', pools);
             currentAmountIn = amountOut;
             changedPoolList.push(pools[0])
+            hopAmountsOut.push(amountOut)
         }
 
-        return { amountOut: currentAmountIn, pools: changedPoolList };
+        return { amountOut: currentAmountIn, pools: changedPoolList, hopAmountsOut };
     };
 
     getTokenPairEdgeData = async (tokenA: string, tokenB: string) => {

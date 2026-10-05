@@ -80,6 +80,7 @@ export interface V2DexConfig {
 
 export interface PairData {
     pairAddress: string;
+    poolAddress?: string; // alias of pairAddress, AllRoute matches pools by poolAddress
     token0: Token;
     token1: Token;
     reserve0: string; // raw BigInt string
@@ -87,6 +88,8 @@ export interface PairData {
     blockNumber?: string;
     blockTimestampLast?: number;
     fee: number; // fee in basis points (e.g. 30 = 0.3%)
+    token0PriceUsd?: number; // set on graph edges, used as the edge cost reference price
+    token1PriceUsd?: number;
 }
 
 export interface V2PoolInfo {
@@ -195,6 +198,7 @@ export class BaseV2QuoteCalculator {
 
         return {
             pairAddress,
+            poolAddress: pairAddress,
             token0,
             token1,
             reserve0: reserves[0].toString(),
@@ -292,6 +296,10 @@ export class BaseV2QuoteCalculator {
         return price.toNumber();
     }
 
+    /**
+     * amountInFormattedInDecimal is in raw base units (wei), matching the V3 calculators.
+     * amountOut is returned in raw base units of tokenOut.
+     */
     public getAmountOut(params: {
         aToB: boolean;
         amountInFormattedInDecimal: Decimal;
@@ -308,8 +316,8 @@ export class BaseV2QuoteCalculator {
         const r0Human = new Decimal(reserve0).div(new Decimal(10).pow(token0.decimals));
         const r1Human = new Decimal(reserve1).div(new Decimal(10).pow(token1.decimals));
 
-        const reserveIn = aToB ? r0Human : r1Human;
-        const reserveOut = aToB ? r1Human : r0Human;
+        const reserveIn = aToB ? new Decimal(reserve0) : new Decimal(reserve1);
+        const reserveOut = aToB ? new Decimal(reserve1) : new Decimal(reserve0);
 
         const amountOut = this.calculateAmountOut(
             amountInFormattedInDecimal,
@@ -324,7 +332,7 @@ export class BaseV2QuoteCalculator {
         return {
             price: spotPrice,
             amountIn: amountInFormattedInDecimal,
-            amountOut,
+            amountOut: amountOut.floor(),
             poolAddress: pairAddress,
             fee: feeAmount,
             reserveIn,
@@ -335,6 +343,9 @@ export class BaseV2QuoteCalculator {
         };
     }
 
+    /**
+     * amountIn and the returned amountOut are raw base-unit integer strings (wei).
+     */
     public async simulateTransaction(
         tokenIn: string,
         tokenOut: string,
@@ -352,7 +363,7 @@ export class BaseV2QuoteCalculator {
             });
 
             return {
-                amountOut: res.amountOut.toString(),
+                amountOut: res.amountOut.toFixed(0),
                 pool: pairAddress,
             };
         } catch (error) {

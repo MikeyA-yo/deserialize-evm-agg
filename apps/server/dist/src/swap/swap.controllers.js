@@ -6,7 +6,7 @@ const swap_schema_1 = require("./swap.schema");
 const swap_service_1 = require("./swap.service");
 const routes_providers_1 = require("@deserialize-evm-agg/routes-providers");
 const chainFromRequest = (paramChain, bodyChain) => {
-    return (0, routes_providers_1.normalizeNetworkType)(paramChain || bodyChain || "0G");
+    return (0, routes_providers_1.normalizeNetworkType)(paramChain || bodyChain || "BASE");
 };
 const providerForChain = (chainName) => {
     const chain = (0, routes_providers_1.getChainFromName)(chainName);

@@ -17,11 +17,36 @@ export declare const swapQuoteService: (params: SwapQuoteRequestType, provider: 
         aToB: boolean;
         dexId: AllDexIdTypes;
     }[];
+    route: QuoteRouteView | undefined;
     dexId: string;
     dexFactory: string;
     isNativeIn: boolean;
     isNativeOut: boolean;
 }>;
+export interface QuoteRouteToken {
+    address: string;
+    symbol: string | null;
+    decimals: number | null;
+}
+export interface QuoteRouteHop {
+    hop: number;
+    dexId: string;
+    dexName: string;
+    poolAddress: string;
+    fee: number;
+    tokenIn: QuoteRouteToken;
+    tokenOut: QuoteRouteToken;
+    amountIn: string;
+    amountOut: string;
+    amountInFormatted: string | null;
+    amountOutFormatted: string | null;
+    percent: number;
+}
+export interface QuoteRouteView {
+    path: QuoteRouteToken[];
+    hops: QuoteRouteHop[];
+    summary: string;
+}
 export declare const swapService: (params: SwapRequestType, provider: JsonRpcProvider, network: NetworkType) => Promise<{
     transaction: {
         transactions: import("ethers").TransactionRequest[];

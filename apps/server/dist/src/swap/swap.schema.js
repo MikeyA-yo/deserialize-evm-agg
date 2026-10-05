@@ -71,13 +71,13 @@ exports.SwapRequestSchema = zod_1.z.object({
 exports.TokenPriceRequestSchema = zod_1.z.object({
     params: zod_1.z.object({
         tokenAddress: zod_1.z.string(),
-        chain: zod_1.z.string().optional().default("0G"),
+        chain: zod_1.z.string().optional().default("BASE"),
     }),
 });
 exports.TokenDetailsRequestSchema = zod_1.z.object({
     params: zod_1.z.object({
         tokenAddress: zod_1.z.string(),
-        chain: zod_1.z.string().optional().default("0G"),
+        chain: zod_1.z.string().optional().default("BASE"),
     }),
 });
 exports.TokenSearchRequestSchema = zod_1.z.object({

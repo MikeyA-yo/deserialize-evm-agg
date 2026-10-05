@@ -34,8 +34,8 @@ export const V4_STATE_VIEW_ABI = [
         outputs: [
             { internalType: "uint160", name: "sqrtPriceX96", type: "uint160" },
             { internalType: "int24", name: "tick", type: "int24" },
-            { internalType: "uint8", name: "protocolFee", type: "uint8" },
-            { internalType: "uint8", name: "lpFee", type: "uint8" },
+            { internalType: "uint24", name: "protocolFee", type: "uint24" },
+            { internalType: "uint24", name: "lpFee", type: "uint24" },
         ],
         stateMutability: "view",
         type: "function",
@@ -119,6 +119,8 @@ export interface V4PoolData {
     sqrtPriceX96: string;
     tick: number;
     liquidity: string;
+    token0PriceUsd?: number; // set on graph edges, used as the edge cost reference price
+    token1PriceUsd?: number;
 }
 
 export interface V4PoolInfo {
@@ -252,6 +254,80 @@ export class BaseV4QuoteCalculator {
         }
     }
 
+    private isWrappedNative(token: string): boolean {
+        return !!this.dexConfig.wrappedNativeTokenAddress &&
+            token.toLowerCase() === this.dexConfig.wrappedNativeTokenAddress.toLowerCase();
+    }
+
+    /**
+     * Maps a V4 currency back to the graph token: native ETH (address(0)) is represented as WETH,
+     * because the routing graph and the rest of the engine are WETH-denominated.
+     */
+    private currencyToGraphToken(currency: string): string {
+        return currency.toLowerCase() === ethers.ZeroAddress.toLowerCase()
+            ? ethers.getAddress(this.dexConfig.wrappedNativeTokenAddress)
+            : currency;
+    }
+
+    /**
+     * Builds the (hookless) PoolKey for a pair. With native = true, WETH is replaced by
+     * native ETH (address(0)), which is how most V4 ETH liquidity is deployed.
+     * Returns null if native is requested but neither token is WETH.
+     */
+    public buildPoolKey(
+        tokenA: string,
+        tokenB: string,
+        feeTier: { fee: number; tickSpacing: number },
+        native: boolean = false
+    ): V4PoolKey | null {
+        let a = ethers.getAddress(tokenA);
+        let b = ethers.getAddress(tokenB);
+        if (a.toLowerCase() === b.toLowerCase()) return null;
+
+        if (native) {
+            if (this.isWrappedNative(a)) a = ethers.ZeroAddress;
+            else if (this.isWrappedNative(b)) b = ethers.ZeroAddress;
+            else return null;
+        }
+
+        const aIsCurrency0 = a.toLowerCase() < b.toLowerCase();
+        return {
+            currency0: aIsCurrency0 ? a : b,
+            currency1: aIsCurrency0 ? b : a,
+            fee: feeTier.fee,
+            tickSpacing: feeTier.tickSpacing,
+            hooks: ethers.ZeroAddress,
+        };
+    }
+
+    /**
+     * Recovers the PoolKey behind a poolId (route plans only carry the poolId) by hashing the
+     * candidate keys for this pair: every configured fee tier, WETH and native ETH variants.
+     * Pure computation, no RPC. Returns the swap direction relative to the key.
+     */
+    public resolvePoolKey(
+        tokenIn: string,
+        tokenOut: string,
+        poolId: string
+    ): { poolKey: V4PoolKey; zeroForOne: boolean } | null {
+        const feeTiers = this.dexConfig.feeTiers || V4_DEFAULT_FEE_TIERS;
+        const target = poolId.toLowerCase();
+
+        for (const native of [false, true]) {
+            for (const tier of feeTiers) {
+                const poolKey = this.buildPoolKey(tokenIn, tokenOut, tier, native);
+                if (!poolKey || this.computePoolId(poolKey).toLowerCase() !== target) continue;
+
+                const tokenInCurrency = native && this.isWrappedNative(tokenIn) ? ethers.ZeroAddress : ethers.getAddress(tokenIn);
+                return {
+                    poolKey,
+                    zeroForOne: tokenInCurrency.toLowerCase() === poolKey.currency0.toLowerCase(),
+                };
+            }
+        }
+        return null;
+    }
+
     /**
      * Finds a single V4 pool for a pair and specific fee tier
      */
@@ -259,24 +335,15 @@ export class BaseV4QuoteCalculator {
         tokenIn: string,
         tokenOut: string,
         feeTier: { fee: number; tickSpacing: number },
-        provider?: JsonRpcProvider
+        provider?: JsonRpcProvider,
+        native: boolean = false
     ): Promise<V4PoolInfo | null> {
         try {
-            const normalizedIn = ethers.getAddress(tokenIn);
-            const normalizedOut = ethers.getAddress(tokenOut);
-            if (normalizedIn.toLowerCase() === normalizedOut.toLowerCase()) return null;
+            const poolKey = this.buildPoolKey(tokenIn, tokenOut, feeTier, native);
+            if (!poolKey) return null;
 
-            const isToken0 = normalizedIn.toLowerCase() < normalizedOut.toLowerCase();
-            const currency0 = isToken0 ? normalizedIn : normalizedOut;
-            const currency1 = isToken0 ? normalizedOut : normalizedIn;
-
-            const poolKey: V4PoolKey = {
-                currency0,
-                currency1,
-                fee: feeTier.fee,
-                tickSpacing: feeTier.tickSpacing,
-                hooks: ethers.ZeroAddress,
-            };
+            const currency0 = this.currencyToGraphToken(poolKey.currency0);
+            const currency1 = this.currencyToGraphToken(poolKey.currency1);
 
             const poolId = this.computePoolId(poolKey);
             const stateView = provider
@@ -323,7 +390,8 @@ export class BaseV4QuoteCalculator {
     }
 
     /**
-     * Finds all active V4 pools for a token pair across standard fee tiers
+     * Finds all active V4 pools for a token pair across standard fee tiers.
+     * For WETH pairs, native-ETH (address(0)) pools are included and exposed as WETH in the graph.
      */
     public async findAllPools(
         tokenIn: string,
@@ -331,16 +399,44 @@ export class BaseV4QuoteCalculator {
         provider?: JsonRpcProvider
     ): Promise<V4PoolInfo[]> {
         const feeTiers = this.dexConfig.feeTiers || V4_DEFAULT_FEE_TIERS;
+        const includeNative = this.isWrappedNative(tokenIn) || this.isWrappedNative(tokenOut);
+        const variants = includeNative ? [false, true] : [false];
+
         const results = await Promise.all(
-            feeTiers.map((tier) => this.findPool(tokenIn, tokenOut, tier, provider))
+            variants.flatMap((native) =>
+                feeTiers.map((tier) => this.findPool(tokenIn, tokenOut, tier, provider, native))
+            )
         );
 
         return results.filter((p): p is V4PoolInfo => p !== null && p.liquidity.gt(0));
     }
 
     /**
+     * Re-reads slot0 and liquidity for a known pool (used by graph edge refresh).
+     */
+    public async refreshPoolData(pool: V4PoolData, provider?: JsonRpcProvider): Promise<V4PoolData> {
+        const stateView = provider
+            ? new Contract(this.dexConfig.stateViewAddress, V4_STATE_VIEW_ABI as any, provider)
+            : this.stateViewContract;
+
+        const [slot0, liquidity] = await Promise.all([
+            stateView.getSlot0(pool.poolId),
+            stateView.getLiquidity(pool.poolId),
+        ]);
+
+        return {
+            ...pool,
+            sqrtPriceX96: slot0.sqrtPriceX96.toString(),
+            tick: Number(slot0.tick),
+            liquidity: liquidity.toString(),
+        };
+    }
+
+    /**
      * Calculates the execution output amount using concentrated liquidity swap math.
      * Within the active tick boundary, this matches Uniswap V3/V4 math identically.
+     * amountInFormattedInDecimal is in raw base units (wei), matching the V3 calculators.
+     * amountOut is returned in raw base units of tokenOut.
      */
     public getAmountOut(params: {
         pool: V4PoolData;
@@ -355,8 +451,7 @@ export class BaseV4QuoteCalculator {
         const L = new Decimal(pool.liquidity);
         const feeRate = new Decimal(pool.fee).div(FEE_DENOMINATOR);
 
-        // Raw amount in smallest token units
-        const rawAmountIn = amountInFormattedInDecimal.mul(new Decimal(10).pow(tokenIn.decimals));
+        const rawAmountIn = amountInFormattedInDecimal;
         const amountInAfterFee = rawAmountIn.mul(new Decimal(1).sub(feeRate));
 
         if (L.lte(0) || sqrtP.lte(0) || rawAmountIn.lte(0)) {
@@ -386,9 +481,9 @@ export class BaseV4QuoteCalculator {
             rawAmountOut = L.mul(new Decimal(1).div(sqrtP).sub(new Decimal(1).div(sqrtPNext)));
         }
 
-        const amountOutFormatted = Decimal.max(0, rawAmountOut.div(new Decimal(10).pow(tokenOut.decimals)));
+        const amountOutRaw = Decimal.max(0, rawAmountOut).floor();
 
-        // Spot price: price of tokenIn expressed in tokenOut
+        // Spot price: price of tokenIn expressed in tokenOut (human units)
         const priceRatio = sqrtP.pow(2);
         const decimalAdjustment = new Decimal(10).pow(pool.token0.decimals - pool.token1.decimals);
         const spotPrice0in1 = priceRatio.mul(decimalAdjustment).toNumber();
@@ -397,7 +492,7 @@ export class BaseV4QuoteCalculator {
         return {
             price: spotPrice,
             amountIn: amountInFormattedInDecimal,
-            amountOut: amountOutFormatted,
+            amountOut: amountOutRaw,
             poolAddress: pool.poolId,
             fee: new Decimal(pool.fee),
             liquidity: L,
@@ -409,7 +504,10 @@ export class BaseV4QuoteCalculator {
 
     /**
      * Simulates swap execution through the Uniswap V4 Quoter contract.
-     * Falls back to analytical calculation if Quoter simulation fails.
+     * Falls back to analytical calculation (live slot0/liquidity) if Quoter simulation fails.
+     * amountIn and the returned amountOut are raw base-unit integer strings (wei).
+     * poolAddress is the poolId; the real PoolKey (fee tier, tick spacing, WETH or native ETH)
+     * is recovered from it so the quote is taken on the same pool the router selected.
      */
     public async simulateTransaction(
         tokenIn: string,
@@ -419,9 +517,14 @@ export class BaseV4QuoteCalculator {
         provider?: JsonRpcProvider
     ): Promise<{ amountOut: string; pool: string }> {
         const prov = provider || this.provider;
-        const normalizedIn = ethers.getAddress(tokenIn);
-        const normalizedOut = ethers.getAddress(tokenOut);
-        const isToken0 = normalizedIn.toLowerCase() < normalizedOut.toLowerCase();
+        const rawAmountIn = new Decimal(amountIn).floor();
+
+        const resolved = this.resolvePoolKey(tokenIn, tokenOut, poolAddress);
+        if (!resolved) {
+            console.error(`[V4:SIMULATE_ERR] Could not resolve PoolKey for pool ${poolAddress} (${tokenIn} -> ${tokenOut})`);
+            return { amountOut: "0", pool: poolAddress };
+        }
+        const { poolKey, zeroForOne } = resolved;
 
         try {
             const quoter = new Contract(
@@ -430,79 +533,46 @@ export class BaseV4QuoteCalculator {
                 prov
             );
 
-            // Fetch pool details to extract poolKey
-            const stateView = new Contract(
-                this.dexConfig.stateViewAddress,
-                V4_STATE_VIEW_ABI as any,
-                prov
-            );
-
-            const [slot0, liquidity] = await Promise.all([
-                stateView.getSlot0(poolAddress),
-                stateView.getLiquidity(poolAddress),
-            ]);
-
-            const tokenInMeta = await this.getTokenMetadata(normalizedIn, prov);
-            const tokenOutMeta = await this.getTokenMetadata(normalizedOut, prov);
-
-            const rawAmountIn = new Decimal(amountIn)
-                .mul(new Decimal(10).pow(tokenInMeta.decimals))
-                .toFixed(0);
-
-            // Infer fee from standard tiers or fallback to 3000
-            const feeTier = (this.dexConfig.feeTiers || V4_DEFAULT_FEE_TIERS)[1] || { fee: 3000, tickSpacing: 60 };
-
-            const poolKey: V4PoolKey = {
-                currency0: isToken0 ? normalizedIn : normalizedOut,
-                currency1: isToken0 ? normalizedOut : normalizedIn,
-                fee: feeTier.fee,
-                tickSpacing: feeTier.tickSpacing,
-                hooks: ethers.ZeroAddress,
-            };
-
             const quoteRes = await quoter.quoteExactInputSingle.staticCall({
                 poolKey,
-                zeroForOne: isToken0,
-                exactAmount: BigInt(rawAmountIn),
+                zeroForOne,
+                exactAmount: BigInt(rawAmountIn.toFixed(0)),
                 hookData: "0x",
             });
 
-            const amountOutFormatted = new Decimal(quoteRes.amountOut.toString())
-                .div(new Decimal(10).pow(tokenOutMeta.decimals))
-                .toString();
-
-            return { amountOut: amountOutFormatted, pool: poolAddress };
+            return { amountOut: quoteRes.amountOut.toString(), pool: poolAddress };
         } catch {
-            // Analytical fallback
-            const tokenInMeta = await this.getTokenMetadata(normalizedIn, prov);
-            const tokenOutMeta = await this.getTokenMetadata(normalizedOut, prov);
+            // Analytical fallback using the live pool state
+            try {
+                const [token0Meta, token1Meta] = await Promise.all([
+                    this.getTokenMetadata(this.currencyToGraphToken(poolKey.currency0), prov),
+                    this.getTokenMetadata(this.currencyToGraphToken(poolKey.currency1), prov),
+                ]);
 
-            const poolData: V4PoolData = {
-                poolId: poolAddress,
-                poolAddress,
-                poolKey: {
-                    currency0: isToken0 ? normalizedIn : normalizedOut,
-                    currency1: isToken0 ? normalizedOut : normalizedIn,
-                    fee: 3000,
-                    tickSpacing: 60,
-                    hooks: ethers.ZeroAddress,
-                },
-                token0: isToken0 ? tokenInMeta : tokenOutMeta,
-                token1: isToken0 ? tokenOutMeta : tokenInMeta,
-                fee: 3000,
-                tickSpacing: 60,
-                sqrtPriceX96: "0",
-                tick: 0,
-                liquidity: "0",
-            };
+                const livePool = await this.refreshPoolData({
+                    poolId: poolAddress,
+                    poolAddress,
+                    poolKey,
+                    token0: token0Meta,
+                    token1: token1Meta,
+                    fee: poolKey.fee,
+                    tickSpacing: poolKey.tickSpacing,
+                    sqrtPriceX96: "0",
+                    tick: 0,
+                    liquidity: "0",
+                }, prov);
 
-            const quote = this.getAmountOut({
-                pool: poolData,
-                aToB: isToken0,
-                amountInFormattedInDecimal: new Decimal(amountIn),
-            });
+                const quote = this.getAmountOut({
+                    pool: livePool,
+                    aToB: zeroForOne,
+                    amountInFormattedInDecimal: rawAmountIn,
+                });
 
-            return { amountOut: quote.amountOut.toString(), pool: poolAddress };
+                return { amountOut: quote.amountOut.toFixed(0), pool: poolAddress };
+            } catch (error) {
+                console.error(`[V4:SIMULATE_ERR] Simulation failed for pool ${poolAddress}:`, error);
+                return { amountOut: "0", pool: poolAddress };
+            }
         }
     }
 
@@ -533,12 +603,8 @@ export class BaseV4QuoteCalculator {
             if (stablePools.length > 0) {
                 const bestPool = stablePools.reduce((a, b) => (a.liquidity.gt(b.liquidity) ? a : b));
                 const aToB = bestPool.poolData.token0.address.toLowerCase() === normalized.toLowerCase();
-                const quote = this.getAmountOut({
-                    pool: bestPool.poolData,
-                    aToB,
-                    amountInFormattedInDecimal: new Decimal(1),
-                });
-                if (quote.amountOut.gt(0)) return quote.amountOut.toNumber();
+                const quote = this.quoteOneToken(bestPool.poolData, aToB);
+                if (quote.gt(0)) return quote.toNumber();
             }
         }
 
@@ -548,19 +614,30 @@ export class BaseV4QuoteCalculator {
             if (nativePools.length > 0) {
                 const bestPool = nativePools.reduce((a, b) => (a.liquidity.gt(b.liquidity) ? a : b));
                 const aToB = bestPool.poolData.token0.address.toLowerCase() === normalized.toLowerCase();
-                const quote = this.getAmountOut({
-                    pool: bestPool.poolData,
-                    aToB,
-                    amountInFormattedInDecimal: new Decimal(1),
-                });
+                const quote = this.quoteOneToken(bestPool.poolData, aToB);
                 const nativePriceUsd = await this.getSureTokenPrice(wrappedAddress);
-                if (quote.amountOut.gt(0) && nativePriceUsd > 0) {
-                    return quote.amountOut.mul(nativePriceUsd).toNumber();
+                if (quote.gt(0) && nativePriceUsd > 0) {
+                    return quote.mul(nativePriceUsd).toNumber();
                 }
             }
         }
 
-        return 1;
+        // Unknown price. Do not invent $1: it is cached and averaged into other DEXes' prices.
+        return 0;
+    }
+
+    /**
+     * Human amount of tokenOut received for exactly 1 whole tokenIn.
+     */
+    private quoteOneToken(pool: V4PoolData, aToB: boolean): Decimal {
+        const tokenIn = aToB ? pool.token0 : pool.token1;
+        const tokenOut = aToB ? pool.token1 : pool.token0;
+        const quote = this.getAmountOut({
+            pool,
+            aToB,
+            amountInFormattedInDecimal: new Decimal(10).pow(tokenIn.decimals),
+        });
+        return quote.amountOut.div(new Decimal(10).pow(tokenOut.decimals));
     }
 
     public formatPool(pool: any): V4PoolData {
@@ -575,6 +652,8 @@ export class BaseV4QuoteCalculator {
             sqrtPriceX96: pool.sqrtPriceX96 || "0",
             tick: Number(pool.tick || 0),
             liquidity: pool.liquidity || "0",
+            token0PriceUsd: pool.token0PriceUsd,
+            token1PriceUsd: pool.token1PriceUsd,
         };
     }
 }

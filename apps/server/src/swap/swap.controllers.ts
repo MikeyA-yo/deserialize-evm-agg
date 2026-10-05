@@ -6,7 +6,7 @@ import { getTokenDetailsService, getTokenPriceService, swapQuoteService, swapSer
 import { createJsonRpcProvider, getChainFromName, normalizeNetworkType, NetworkType } from "@deserialize-evm-agg/routes-providers";
 
 const chainFromRequest = (paramChain?: string, bodyChain?: string): NetworkType => {
-    return normalizeNetworkType(paramChain || bodyChain || "0G");
+    return normalizeNetworkType(paramChain || bodyChain || "BASE");
 };
 
 const providerForChain = (chainName: NetworkType) => {
