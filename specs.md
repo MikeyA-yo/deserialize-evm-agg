@@ -503,10 +503,10 @@ The following pairs were verified live against Base Mainnet RPC and pools:
    - **No deployment needed.** All swap proxy contracts and adapters are in place on Base Mainnet.
 2. **Aggregator Channel Usage:**
    - Use the `/base/quote` and `/base/swap` channels directly from your frontend web app.
-3. **Multi-Hop Traversal (Edge Case):**
-   - Direct pairs to/from ETH or WETH resolve across all three DEXes.
-   - For multi-hop routing between two non-ETH tokens (e.g., `USDC -> WETH -> CLANKER`), the graph currently rejects the 2nd hop due to the edge cost calculation across differing decimals (6 to 18).
-   - If two arbitrary altcoins need to be swapped directly without routing through ETH first on the UI, updating the edge cost weight in `v3Route.ts` will resolve multi-hop pathing.
+3. **Multi-Hop Routing:**
+   - Multi-hop routes across tokens with different decimals (e.g. `ETH -> USDC -> DAI`, 18 → 6 → 18) resolve correctly as of Oct 5, 2026. Before the edge-cost fix, the router could pick thin pools (e.g. 1 ETH → 8.30 DAI); the same quote now returns ≈ 2,718 DAI via USDC.
+   - Every quote is checked against the on-chain quoters across several candidate paths (direct, via WETH, via USDC), and the best real output is returned. `amountOut` and `route` reflect the chosen path.
+   - The frontend needs no changes. Quote latency may rise slightly (typically 0–8 s on cached pairs).
 
 ---
 

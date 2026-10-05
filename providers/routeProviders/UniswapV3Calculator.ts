@@ -47,6 +47,8 @@ export interface PoolData {
     sqrtPriceX96: string;
     liquidity: string;
     blockNumber?: string
+    token0PriceUsd?: number; // set on graph edges, used as the edge cost reference price
+    token1PriceUsd?: number;
 }
 
 export interface SwapResult {
