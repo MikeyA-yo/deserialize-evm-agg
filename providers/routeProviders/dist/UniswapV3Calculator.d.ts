@@ -30,6 +30,8 @@ export interface PoolData {
     sqrtPriceX96: string;
     liquidity: string;
     blockNumber?: string;
+    token0PriceUsd?: number;
+    token1PriceUsd?: number;
 }
 export interface SwapResult {
     amountOut: Decimal;

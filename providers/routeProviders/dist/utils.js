@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getTokenDetails = exports.transformRoutePlanToIPath = exports.rawSwapImpactCost = exports.usdReferencePrice = void 0;
+exports.getTokenDetails = exports.transformRoutePlanToIPath = exports.rawSwapImpactCost = exports.concentratedLiquidityAmountOutRaw = exports.usdReferencePrice = void 0;
 const ethers_1 = require("ethers");
 const UniswapV3Calculator_1 = require("./UniswapV3Calculator");
 const decimal_js_1 = __importDefault(require("decimal.js"));
@@ -19,8 +19,34 @@ const usdReferencePrice = (pool, aToB) => {
     return aToB ? p0 / p1 : p1 / p0;
 };
 exports.usdReferencePrice = usdReferencePrice;
+const Q96 = new decimal_js_1.default(2).pow(96);
 /**
- * Edge cost (price impact %) shared by the V2, Aerodrome V2 and V4 routes.
+ * Exact concentrated-liquidity output (raw units) for a swap that stays within the current
+ * liquidity range. feePips is in hundredths of a bip (500 = 0.05%).
+ * Used for edge costs only; real quotes come from the on-chain quoters.
+ */
+const concentratedLiquidityAmountOutRaw = (sqrtPriceX96, liquidity, feePips, zeroForOne, amountInRaw) => {
+    const sqrtP = new decimal_js_1.default(sqrtPriceX96.toString()).div(Q96);
+    const L = new decimal_js_1.default(liquidity.toString());
+    if (sqrtP.lte(0) || L.lte(0) || amountInRaw.lte(0))
+        return new decimal_js_1.default(0);
+    const amountInAfterFee = amountInRaw.mul(new decimal_js_1.default(1).sub(new decimal_js_1.default(feePips).div(1000000)));
+    let amountOut;
+    if (zeroForOne) {
+        // token0 in: sqrtP falls to L*sqrtP / (L + dx*sqrtP); token1 out = L * (sqrtP - sqrtPNext)
+        const sqrtPNext = L.mul(sqrtP).div(L.add(amountInAfterFee.mul(sqrtP)));
+        amountOut = L.mul(sqrtP.sub(sqrtPNext));
+    }
+    else {
+        // token1 in: sqrtP rises by dy / L; token0 out = L * (1/sqrtP - 1/sqrtPNext)
+        const sqrtPNext = sqrtP.add(amountInAfterFee.div(L));
+        amountOut = L.mul(new decimal_js_1.default(1).div(sqrtP).sub(new decimal_js_1.default(1).div(sqrtPNext)));
+    }
+    return decimal_js_1.default.max(0, amountOut).floor();
+};
+exports.concentratedLiquidityAmountOutRaw = concentratedLiquidityAmountOutRaw;
+/**
+ * Edge cost (price impact %) shared by the V2, Aerodrome V2, V3 and V4 routes.
  * params.key.key is the raw input amount; the swap is sized in raw units of the
  * edge's from-token and quoted in raw units, then compared to a human price.
  * The comparison uses referencePrice (USD-derived market price) when available, so a

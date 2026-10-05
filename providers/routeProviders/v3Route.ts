@@ -6,7 +6,7 @@ import { JsonRpcProvider, TransactionRequest } from "ethers";
 import { DeserializeRoutePlan, IRoute, SwapQuoteParamWithEdgeData, SwapQuoteParamWithEdgeDataString } from "./IRoute";
 import { ChainConfig, createJsonRpcProvider, DexConfig, PoolData, PoolInfo, UniswapV3QuoteCalculator, ZeroDexQuoteParams } from "./UniswapV3Calculator";
 import { ArrayBiMap, Edge, EdgeData, FunctionToMutateTheEdgeCostType, Graph, TokenBiMap } from "@deserialize-evm-agg/graph";
-import { transformRoutePlanToIPath } from "./utils";
+import { concentratedLiquidityAmountOutRaw, rawSwapImpactCost, transformRoutePlanToIPath, usdReferencePrice } from "./utils";
 
 export type RouteConstructor<DexIdTypes, T = any> = new (
     provider: JsonRpcProvider,
@@ -106,6 +106,8 @@ export class BaseV3Route<DexIdTypes> implements IRoute<PoolData, DexIdTypes> {
             sqrtPriceX96: pool.sqrtPriceX96,
             fee: pool.fee,
             liquidity: pool.liquidity,
+            token0PriceUsd: pool.token0PriceUsd,
+            token1PriceUsd: pool.token1PriceUsd,
         };
     };
     getTokenBiMap = async <PoolData>(
@@ -781,6 +783,8 @@ export class BaseV3Route<DexIdTypes> implements IRoute<PoolData, DexIdTypes> {
                 token1: data.token1,
                 poolAddress: data.poolAddress,
                 slot0: data.slot0,
+                token0PriceUsd: priceUsdc,
+                token1PriceUsd: rPriceUsdc,
             }
         }
         return res as R | null
@@ -788,89 +792,42 @@ export class BaseV3Route<DexIdTypes> implements IRoute<PoolData, DexIdTypes> {
     getSurePriceOfToken = async (tokenAddress: string) => {
         //check if it is cache and return early
         const cachedPrice = await this.cache.getPriceFromCache(tokenAddress)
-        if (cachedPrice !== null) {
+        if (cachedPrice !== null && cachedPrice > 0) {
             return cachedPrice
         }
         const priceUsdc = await this.calculator.getSureTokenPrice(
             tokenAddress,
         );
-        await this.cache.setPriceToCache(tokenAddress, priceUsdc)
+        // Only cache real prices; the price cache is shared with every other DEX route.
+        if (priceUsdc > 0) {
+            await this.cache.setPriceToCache(tokenAddress, priceUsdc)
+        }
         return priceUsdc
     }
+    /**
+     * Edge cost = price impact % of the sized swap, in human units (see rawSwapImpactCost).
+     * The amount out uses exact in-range concentrated-liquidity math and is compared against the
+     * USD-derived market price when both token prices are known (else the pool's spot price).
+     * Tick boundaries are not modelled, so thin concentrated pools can still look deeper than
+     * they are; quotes are re-checked against the on-chain quoters before being returned.
+     */
     getFunctionToMutateEdgeCost = () => {
-        //?i should find a way to properly type the below generic instead of using "any"
         let func: FunctionToMutateTheEdgeCostType<any>;
         func = (params, e) => {
-            // console.log('params: ', params);
-            let swapAmount = (params.key.key * params.key.keyRate) / params.priceUsdc;
+            const pool = this.formatPool(typeof e.edgeData.pool === "string" ? JSON.parse(e.edgeData.pool) : e.edgeData.pool);
 
-            // console.log('params.priceUsdc: ', e.edgeData.priceUsdc);
-            // console.log('params.priceUsdc: ', e.edgeData.aToB);
-
-
-            // console.log('key : ', params.key.key, 'keyRate: ', params.key.keyRate, "dollar value :", (params.key.key * params.key.keyRate), 'params.priceUsdc: ', params.priceUsdc, 'swapAmount: ', swapAmount);
-
-
-            //divide it by the decimal of the key and then multiply by the current token input decimal
-
-            swapAmount = swapAmount / Math.pow(10, Math.abs(params.key.keyDecimal));
-            swapAmount =
-                swapAmount * Math.pow(10, Math.abs(params.tokenFromDecimals));
-            // console.log('swapAmount: ', swapAmount);
-            // console.log('e.edgeData.pool: ', e.edgeData.pool);
-            // console.log('e: ', e);
-            const swapParams: ZeroDexQuoteParams = {
-                pool: this.formatPool(typeof e.edgeData.pool === "string" ? JSON.parse(e.edgeData.pool) : e.edgeData.pool),
-                aToB: e.edgeData.aToB,
-                amountInFormattedInDecimal: new Decimal(swapAmount),
-            };
-
-            // swapParams.ticks;
-            // console.log("swap direction : ", swapParams.aToB ? swapParams.pool.token0.symbol : swapParams.pool.token1.symbol, " => ", swapParams.aToB ? swapParams.pool.token1.symbol : swapParams.pool.token0.symbol, "aToB : ", swapParams.aToB, "fee: ", swapParams.pool.fee);
-            const res = this.calculator.getAmountOut(swapParams);
-            // console.log('swapParams: ', swapParams);
-            // console.log('res: ', res);
-            if (!res) {
-                return 100;
-            }
-
-            const amountOut = res.amountOut;
-
-            if (amountOut.lt(new Decimal(0))) {
-                return 100;
-            }
-
-            const amountIn =
-                new Decimal(swapAmount)
-
-            const amountBOut = amountOut
-
-            let amountOutInTokenA = amountBOut.div(params.price ?? 0)
-            // Calculate swap impact
-            const _swapImpact = (((amountIn.sub(amountOutInTokenA)).div(amountIn)).mul(100)).toNumber()
-            if (isNaN(_swapImpact)) {
-                // console.warn("Swap impact is NaN, returning 100");
-                return 100;
-            }
-            // console.log(
-            //     "DEX ID", e.edgeData.dexId,
-            //     "_swapImpact: ", _swapImpact,
-            //     "from", e?.from,
-            //     "to", e?.to,
-            //     "from decimals", params.tokenFromDecimals,
-            //     "to decimals", params.tokenToDecimals,
-            // );
-
-            // console.log(
-            //     "amountBOut: =>", amountBOut.toNumber(),
-            //     "params.price: ", params.price,
-            //     "amountIn", amountIn.toNumber(),
-            //     "amountOutInTokenA: ", amountOutInTokenA.toNumber()
-            // );
-            // console.log("======================================")
-
-
-            return Math.max(0, _swapImpact);
+            return rawSwapImpactCost(
+                params,
+                (amountInRaw) =>
+                    concentratedLiquidityAmountOutRaw(
+                        pool.sqrtPriceX96,
+                        pool.liquidity,
+                        Number(pool.fee),
+                        e.edgeData.aToB,
+                        amountInRaw
+                    ),
+                usdReferencePrice(pool, e.edgeData.aToB)
+            );
         };
 
         return func;

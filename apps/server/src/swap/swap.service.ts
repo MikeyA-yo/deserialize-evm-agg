@@ -16,7 +16,7 @@ export const swapQuoteService = async (params: SwapQuoteRequestType, provider: J
     try {
         console.log(`    [QUOTE_SVC:1/5] Initiating route search: Network=${network}, Pair=${params.tokenA} -> ${params.tokenB}, Amount=${params.amountIn}`);
 
-        const { routes, bestOutcome, RouteJsonRpcProvider } = await getBestRoutes(
+        const { routes, bestOutcome, RouteJsonRpcProvider, simulated } = await getBestRoutes(
             network,
             params.tokenA,
             params.tokenB,
@@ -30,8 +30,9 @@ export const swapQuoteService = async (params: SwapQuoteRequestType, provider: J
         const isNativeOut = params.tokenB.toLowerCase() === RouteJsonRpcProvider.getDexConfig().nativeTokenAddress.toLowerCase();
         console.log(`    [QUOTE_SVC:2/5] Best routes retrieved (${routes.length} hop(s)):`, routes.map(r => `${r.dexId} (${r.tokenA.slice(0, 8)}... -> ${r.tokenB.slice(0, 8)}...) via pool ${r.poolAddress}`));
 
-        console.log(`    [QUOTE_SVC:3/5] Simulating on-chain amountOut from route plan...`);
-        const { amountOut, pools, hopAmountsOut } =
+        // Routes chosen by on-chain simulation already carry their simulated amounts
+        console.log(`    [QUOTE_SVC:3/5] ${simulated ? "Using amounts from route simulation" : "Simulating on-chain amountOut from route plan..."}`);
+        const { amountOut, pools, hopAmountsOut } = simulated ??
             await RouteJsonRpcProvider.getAmountOutFromPlan(
                 new Decimal(params.amountIn),
                 routes,

@@ -22,7 +22,7 @@ We are completing the expansion of the **Base Mainnet (Chain ID: 8453)** swap ag
 
 | Component | Repository | Status | Next Milestone |
 | :--- | :--- | :--- | :--- |
-| **Routing & Quoting Engine** | `deserialize-evm-agg` (this repo) | **Quoting works on all 7 DEXes, with known routing issues**<br>All 7 DEX calculators and route providers are implemented. The V2/V4 units and logic fixes from Oct 4 2026 were verified against live Base pools (see §8). There are no automated tests in the repo. V3 edge-cost bug still open (see §9). | Fix the V3 edge cost (§9.1). The V4 execution path needs SDK and adapter work (§9.2). |
+| **Routing & Quoting Engine** | `deserialize-evm-agg` (this repo) | **Quoting works on all 7 DEXes**<br>V2/V4 units and logic fixes (Oct 4 2026, §8) and the V3 edge cost plus on-chain route checking (Oct 5 2026, §11) were verified against live Base pools. There are no automated tests in the repo. | The V4 execution path needs SDK and adapter work (§9.2). |
 | **Execution Smart Contracts** | `deserialize-evm-swap-aggregator-contracts` | **Contracts Written**<br>`UniswapV2Adapter.sol`, `AerodromeV2Adapter.sol`, `UniswapV4Adapter.sol` prepared. `.env.base` configured. | Run deployment scripts on Base Mainnet, whitelist adapters on `SwapProxy`, and map factories in `AdapterTracker`. |
 
 ---
@@ -235,8 +235,8 @@ All `getAmountOut` and `simulateTransaction` methods in these three calculators 
 
 ## 9. Known Issues (not changed in this pass)
 
-### 9.1 V3 edge cost is wrong for mixed-decimal pairs (high priority)
-`BaseV3Route.getFunctionToMutateEdgeCost` (`v3Route.ts`) divides a **raw** `amountOut` by a **human** spot price and compares it with a raw `amountIn`. For 18→6-decimal hops (e.g. WETH→USDC) every V3 edge scores ≈**100**. For 6→18-decimal hops (e.g. USDC→HIGHER) it scores **0** regardless of liquidity. Before §8, V2/V4 edges also scored ≈100, which hid this. Now that they score correctly, the router can be steered into thin V3 pools. Observed: WETH→HIGHER became WETH →(V4) USDC →(thin Uniswap V3 pool) HIGHER for ~1.1k HIGHER, while the direct V3 pool gives ~134k. Quoted amounts are still accurate (every hop is simulated); only route **selection** suffers. Fix: compute V3 impact in human units, ideally against the USD reference price as in `rawSwapImpactCost`.
+### 9.1 ~~V3 edge cost is wrong for mixed-decimal pairs~~ (fixed Oct 5, 2026, see §11)
+The V3 edge cost divided a raw `amountOut` by a human spot price, scoring ≈100 on 18→6-decimal hops and 0 on 6→18 hops. Combined with thin pools this produced quotes like 1 ETH → 8.30 DAI and 0.01 ETH → ~1.1k HIGHER (market ~135k).
 
 ### 9.2 V4 execution path
 `constructHop` in `swap-contract-sdk` calls `ethers.getAddress(poolAddress)`, which throws on a bytes32 V4 poolId. The hop tuple `[tokenIn, tokenOut, adapter, pool, "0"]` also has no room for the PoolKey (`fee`, `tickSpacing`, `hooks`, native vs WETH currency). The SDK and `UniswapV4Adapter` need a hop format that carries the PoolKey. The adapter must also wrap/unwrap when the PoolKey uses native ETH but the route token is WETH (§8.2 #4). Only hookless (`hooks = address(0)`) V4 pools are discovered.
@@ -278,3 +278,42 @@ Every `/quote` (and `/:chain/quote`) response now includes a `route` object for 
 * **`fee`**: passed through as stored by each DEX route, and the units differ per DEX (V3/V4 in hundredths of a bip, e.g. `500` = 0.05%; V2/Aerodrome V2 in bps, e.g. `30` = 0.3%). Do not render it as a percentage without per-DEX handling.
 * **Failure is non-fatal**: if the route view cannot be built, `route` is omitted and the quote is still returned.
 * Implemented in `buildQuoteRouteView` (`apps/server/src/swap/swap.service.ts`). Swagger schemas: `QuoteRoute`, `QuoteRouteHop`, `QuoteRouteToken`.
+
+---
+
+## 11. Changelog: V3 Edge Cost & On-Chain Route Checking (Oct 5, 2026)
+
+### 11.1 Problem
+The frontend showed **1 ETH → 8.30 DAI** (market ≈ 2,712). Every direct WETH/DAI pool on Base is thin; real DAI liquidity is in USDC/DAI. The router still preferred thin pools for two reasons:
+1. **V3 edge cost units** (old §9.1): it divided a raw `amountOut` by a human price, so V3 edges scored ≈100 on 18→6-decimal hops and **0** on 6→18 hops, whatever the pool's depth.
+2. **In-range math cannot see thin pools**: edge costs assume the pool's current liquidity covers the whole trade. A PancakeSwap V3 WETH/DAI pool scored **0.01** but its on-chain quoter returns **4.94 DAI** for 1 WETH. The V3 calculator's token0→token1 approximation could also overshoot past the price on large trades, making thin pools look better than market.
+
+### 11.2 Fixes
+
+| # | Change | Files |
+| :--- | :--- | :--- |
+| 1 | The V3 edge cost now uses `rawSwapImpactCost` (human units, compared against the USD-derived market price), the same as V2/V4. V3 edges store `token0PriceUsd` / `token1PriceUsd` on `edgeData.pool`, and `formatPool` keeps them. | `v3Route.ts`, `UniswapV3Calculator.ts` (`PoolData` type only) |
+| 2 | The V3 edge cost uses a new exact in-range concentrated-liquidity formula, `concentratedLiquidityAmountOutRaw`, instead of the V3 calculator's approximation. The V3 calculator itself is unchanged; quotes still come from the on-chain quoters. | `utils.ts`, `v3Route.ts` |
+| 3 | **On-chain route checking.** After Dijkstra, `selectRouteBySimulation` re-quotes candidate token paths with the real quoters: Dijkstra's path, the direct pair, and two-hop paths via WETH and via the stable token (USDC). For each path it picks, hop by hop, the pool with the highest simulated output (the 6 lowest-cost pools per hop). That is optimal for a fixed token path, since a hop's output only grows with its input. The path with the highest final output wins. Identical hop simulations are reused. If no candidate simulates successfully, it falls back to the Dijkstra route. | `apps/server/src/index.ts` |
+| 4 | `getBestRoutes` returns the winning `simulated` result (amounts per hop), and the quote service uses it directly instead of simulating the route a second time. | `apps/server/src/index.ts`, `swap.service.ts` |
+| 5 | V3 no longer caches a `0` price in the shared price cache (consistent with §8.2 #10). | `v3Route.ts` |
+
+### 11.3 Verification (Base mainnet, temporary second server instance)
+
+| Quote | Before | After |
+| :--- | :--- | :--- |
+| 1 ETH → DAI | 8.30 (frontend) / 2,336.41 | **2,718.47 DAI** via USDC (PancakeSwap V3 → Uniswap V3) |
+| 2,700 DAI → ETH | n/a | 0.99256 ETH via USDC |
+| 2,700 USDC → DAI | 2,336 (wrong pool) | **2,699.71 DAI** (Uniswap V3) |
+| 0.01 ETH → HIGHER | ~1,099 HIGHER | **135,219 HIGHER** (Uniswap V3, direct) |
+| 0.01 WETH → USDC | 27.05 | 27.18 USDC (Aerodrome V3) |
+| 27 USDC → WETH | n/a | 0.009931 WETH (PancakeSwap V3) |
+
+* `POST /base/swap` built from a simulated 1 ETH → DAI quote returns a valid single `SwapProxy.swap` transaction (`value` = 1 ETH, no approval needed for native input).
+* Quote latency with route checking was 0–8 s on warm pairs with the configured RPC.
+* `npm run build` and `tsc --noEmit` exit 0.
+
+### 11.4 Notes
+* **Cache refresh.** After deploying, run an edge refresh (the indexer's `refreshExistingEdges`, or the equivalent per-route `getAllExistingPoolData` → `refreshGraphEdges` → rebuild `ALL_BASE`) so cached edges carry USD prices; edges without them fall back to spot-price cost. This was done on the shared Redis on Oct 5 (194 edges across 7 DEXes, all priced). Scripts doing this outside the server must install the `BigInt.prototype.toJSON` shim used by the server and indexer, otherwise writing V3 pool data fails.
+* **RPC load.** Each quote now runs a few extra quoter calls (≤ 6 pools per hop × up to 4 candidate paths, de-duplicated and run in parallel). If the RPC throttles, lower `MAX_POOLS_PER_HOP` in `apps/server/src/index.ts`.
+* **Limits.** Besides Dijkstra's own path, the only candidates are the direct pair and two-hop paths via WETH or USDC. Split routing is not implemented, so `route.hops[].percent` stays 100.

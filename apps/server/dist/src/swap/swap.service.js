@@ -13,14 +13,16 @@ const routes_providers_1 = require("@deserialize-evm-agg/routes-providers");
 const swapQuoteService = async (params, provider, network) => {
     try {
         console.log(`    [QUOTE_SVC:1/5] Initiating route search: Network=${network}, Pair=${params.tokenA} -> ${params.tokenB}, Amount=${params.amountIn}`);
-        const { routes, bestOutcome, RouteJsonRpcProvider } = await (0, index_1.getBestRoutes)(network, params.tokenA, params.tokenB, (params.amountIn), provider, {
+        const { routes, bestOutcome, RouteJsonRpcProvider, simulated } = await (0, index_1.getBestRoutes)(network, params.tokenA, params.tokenB, (params.amountIn), provider, {
             targetRouteNumber: 5,
         });
         const isNativeIn = params.tokenA.toLowerCase() === RouteJsonRpcProvider.getDexConfig().nativeTokenAddress.toLowerCase();
         const isNativeOut = params.tokenB.toLowerCase() === RouteJsonRpcProvider.getDexConfig().nativeTokenAddress.toLowerCase();
         console.log(`    [QUOTE_SVC:2/5] Best routes retrieved (${routes.length} hop(s)):`, routes.map(r => `${r.dexId} (${r.tokenA.slice(0, 8)}... -> ${r.tokenB.slice(0, 8)}...) via pool ${r.poolAddress}`));
-        console.log(`    [QUOTE_SVC:3/5] Simulating on-chain amountOut from route plan...`);
-        const { amountOut, pools, hopAmountsOut } = await RouteJsonRpcProvider.getAmountOutFromPlan(new decimal_js_1.default(params.amountIn), routes, 0, provider);
+        // Routes chosen by on-chain simulation already carry their simulated amounts
+        console.log(`    [QUOTE_SVC:3/5] ${simulated ? "Using amounts from route simulation" : "Simulating on-chain amountOut from route plan..."}`);
+        const { amountOut, pools, hopAmountsOut } = simulated ??
+            await RouteJsonRpcProvider.getAmountOutFromPlan(new decimal_js_1.default(params.amountIn), routes, 0, provider);
         console.log(`    [QUOTE_SVC:4/5] amountOut result: ${amountOut.toString()}`);
         // Get token price
         let tokenPrice = new decimal_js_1.default(0);

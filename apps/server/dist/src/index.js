@@ -1,4 +1,7 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getRoutePlanFromTokenStringPath = exports.getBestRoutes = exports.initAndGetCache = void 0;
 const cache_1 = require("@deserialize-evm-agg/cache");
@@ -7,9 +10,90 @@ const routes_providers_1 = require("@deserialize-evm-agg/routes-providers");
 const redis_1 = require("redis");
 const config_1 = require("./config");
 const errors_api_1 = require("./errors/errors.api");
+const decimal_js_1 = __importDefault(require("decimal.js"));
 BigInt.prototype.toJSON = function () {
     const int = Number.parseInt(this.toString());
     return int ?? this.toString();
+};
+// Max pools simulated per hop when checking candidate routes against the on-chain quoters
+const MAX_POOLS_PER_HOP = 6;
+/**
+ * The graph's edge costs use in-range math and cannot see tick boundaries or stale pools, so
+ * Dijkstra can pick a pool that looks deep but returns very little (e.g. a thin WETH/DAI pool
+ * returning ~5 DAI for 1 WETH). This re-checks candidate token paths with the real quoters:
+ * Dijkstra's path, the direct pair, and two-hop paths via the hub tokens (WETH, stable).
+ * For each path the pool with the highest simulated output is chosen hop by hop (optimal for a
+ * fixed token path, as each hop's output only grows with its input), and the path with the
+ * highest final output wins.
+ */
+const selectRouteBySimulation = async (RouteJsonRpcProvider, graph, tokenBiMap, amountIn, candidatePaths, costFunc, costKey, provider) => {
+    const simulations = new Map();
+    const simulateHop = (plan, hopAmountIn) => {
+        const id = `${plan.dexId}:${plan.poolAddress}:${plan.tokenA}:${hopAmountIn.toFixed(0)}`;
+        if (!simulations.has(id)) {
+            simulations.set(id, RouteJsonRpcProvider.getAmountOutFromPlan(hopAmountIn, [plan], 0, provider)
+                .then(({ amountOut }) => (amountOut && amountOut.isFinite() ? amountOut : new decimal_js_1.default(0)))
+                .catch(() => new decimal_js_1.default(0)));
+        }
+        return simulations.get(id);
+    };
+    const simulatePath = async (path) => {
+        let hopAmountIn = amountIn;
+        const routes = [];
+        const hopAmountsOut = [];
+        for (let i = 0; i < path.length - 1; i++) {
+            const from = path[i], to = path[i + 1];
+            const seen = new Set();
+            const edges = (graph[from] ?? [])
+                .filter((e) => e.to === to)
+                .filter((e) => {
+                const id = `${e.edgeData.dexId}:${e.edgeData.poolAddress}`.toLowerCase();
+                if (seen.has(id))
+                    return false;
+                seen.add(id);
+                return true;
+            })
+                .map((e) => {
+                let cost = 100;
+                try {
+                    cost = costFunc({ ...e.edgeData, key: costKey }, e);
+                }
+                catch { }
+                return { e, cost: Number.isFinite(cost) ? cost : 100 };
+            })
+                .sort((a, b) => a.cost - b.cost)
+                .slice(0, MAX_POOLS_PER_HOP);
+            if (edges.length === 0)
+                return undefined;
+            const plans = edges.map(({ e }) => ({
+                tokenA: tokenBiMap.get(from),
+                tokenB: tokenBiMap.get(to),
+                dexId: e.edgeData.dexId,
+                poolAddress: e.edgeData.poolAddress,
+                aToB: e.edgeData.aToB,
+                fee: Number(e.edgeData.fee),
+            }));
+            const outs = await Promise.all(plans.map((plan) => simulateHop(plan, hopAmountIn)));
+            let best = -1;
+            outs.forEach((out, j) => { if (out.gt(0) && (best < 0 || out.gt(outs[best])))
+                best = j; });
+            if (best < 0)
+                return undefined;
+            routes.push(plans[best]);
+            hopAmountsOut.push(outs[best]);
+            hopAmountIn = outs[best];
+        }
+        return { routes, amountOut: hopAmountIn, hopAmountsOut, pools: routes.map((r) => r.poolAddress) };
+    };
+    const results = await Promise.all(candidatePaths.map((path) => simulatePath(path).catch(() => undefined)));
+    let winner;
+    results.forEach((result, i) => {
+        const label = candidatePaths[i].map((t) => tokenBiMap.get(t)?.slice(0, 8)).join(" -> ");
+        console.log(`      [ROUTER:SIMULATE] ${label}: ${result ? `${result.amountOut.toFixed(0)} via ${result.routes.map((r) => r.dexId).join(" -> ")}` : "no viable pools"}`);
+        if (result && (!winner || result.amountOut.gt(winner.amountOut)))
+            winner = result;
+    });
+    return winner;
 };
 // export const getRouteJsonRpcProvider = (dexId: AllDexIdTypes) => {
 //     if (dexId === DEX_IDS.ZERO_G) {
@@ -114,6 +198,30 @@ const getBestRoutes = async (network, fromTokenString, toTokenString, amount, _p
     console.log(`      [ROUTER:DIJKSTRA_SUCCESS] Found path with ${edgeData.length} hop(s)! Best outcome:`, bestOutcome);
     const tokenStringPath = convertEdgeListToTokenString(edgeData, tokenBiMap);
     const routes = await (0, exports.getRoutePlanFromTokenStringPath)(tokenStringPath);
+    // Re-check candidate paths with the on-chain quoters (see selectRouteBySimulation)
+    const candidatePaths = [];
+    const addCandidate = (p) => {
+        if (p.length < 2 || p.some((i) => i === undefined))
+            return;
+        if (!candidatePaths.some((c) => c.join(",") === p.join(",")))
+            candidatePaths.push(p);
+    };
+    if (edgeData.length > 0)
+        addCandidate([edgeData[0].from, ...edgeData.map((e) => e.to)]);
+    addCandidate([fromIndex, toIndex]);
+    for (const hub of [config.wrappedNativeTokenAddress, config.stableTokenAddress]) {
+        const hubIndex = hub ? tokenBiMap.getByValue(hub.toLowerCase()) : undefined;
+        if (hubIndex !== undefined && hubIndex !== fromIndex && hubIndex !== toIndex) {
+            addCandidate([fromIndex, hubIndex, toIndex]);
+        }
+    }
+    console.log(`      [ROUTER:SIMULATE] Checking ${candidatePaths.length} candidate path(s) against on-chain quoters...`);
+    const simulated = await selectRouteBySimulation(RouteJsonRpcProvider, graph, tokenBiMap, new decimal_js_1.default(amount), candidatePaths, func, { key: amount, keyRate: keyRate ?? 0, keyDecimal: token.decimals }, provider);
+    if (simulated) {
+        console.log(`      [ROUTER:SIMULATE_SUCCESS] Selected ${simulated.routes.map((r) => r.dexId).join(" -> ")} with amountOut ${simulated.amountOut.toFixed(0)}`);
+        return { routes: simulated.routes, RouteJsonRpcProvider: RouteJsonRpcProvider, bestOutcome, simulated };
+    }
+    console.warn(`      [ROUTER:SIMULATE_WARN] No candidate path simulated successfully; falling back to the Dijkstra route`);
     return { routes, RouteJsonRpcProvider: RouteJsonRpcProvider, bestOutcome };
 };
 exports.getBestRoutes = getBestRoutes;
