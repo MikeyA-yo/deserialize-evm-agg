@@ -8,6 +8,7 @@ import { config } from "./config";
 import { NetworkType } from "@deserialize-evm-agg/routes-providers";
 import { ApiError } from "./errors/errors.api";
 import Decimal from "decimal.js";
+import { DISABLED_DEX_IDS } from "./constants";
 
 
 
@@ -33,6 +34,16 @@ export interface SimulatedRoute {
 
 // Max pools simulated per hop when checking candidate routes against the on-chain quoters
 const MAX_POOLS_PER_HOP = 6;
+
+/**
+ * Drops edges of DEXes whose adapters cannot execute (DISABLED_DEX_IDS) so they are never
+ * quoted. Returns a filtered copy; the cached graph is not modified.
+ */
+const withoutDisabledDexes = (graph: Edge<EdgeData>[][]): Edge<EdgeData>[][] => {
+    if (DISABLED_DEX_IDS.length === 0) return graph;
+    const disabled = new Set(DISABLED_DEX_IDS);
+    return graph.map((edges) => (edges ?? []).filter((e) => !disabled.has(e.edgeData.dexId)));
+};
 
 /**
  * The graph's edge costs use in-range math and cannot see tick boundaries or stale pools, so
@@ -195,7 +206,7 @@ export const getBestRoutes = async (
     }
 
     let { tokenBiMap } = await RouteJsonRpcProvider.getTokenBiMap();
-    let graph = await RouteJsonRpcProvider.getGraph();
+    let graph = withoutDisabledDexes(await RouteJsonRpcProvider.getGraph());
 
     let path: number[][] = [];
 
@@ -214,7 +225,7 @@ export const getBestRoutes = async (
         );
         const updated = await RouteJsonRpcProvider.findUpdateTokenPairPools(fromTokenString, toTokenString);
         tokenBiMap = updated.newTokenBiMap;
-        graph = updated.newGraph;
+        graph = withoutDisabledDexes(updated.newGraph);
         syncIndexes();
         if (fromIndex === undefined || toIndex === undefined) {
             console.error(`      [ROUTER:ERROR] Token pair still not found after on-chain discovery!`);
@@ -231,7 +242,7 @@ export const getBestRoutes = async (
         console.log(`      [ROUTER:AUTO_DISCOVERY] Zero edges found. Re-indexing on-chain pools...`);
         const updated = await RouteJsonRpcProvider.findUpdateTokenPairPools(fromTokenString, toTokenString);
         tokenBiMap = updated.newTokenBiMap;
-        graph = updated.newGraph;
+        graph = withoutDisabledDexes(updated.newGraph);
         syncIndexes();
         if (fromIndex === undefined || toIndex === undefined) {
             throw new Error(`Token pair ${fromTokenString} / ${toTokenString} not supported by any known DEX on ${network}`);

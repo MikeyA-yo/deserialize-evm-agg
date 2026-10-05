@@ -22,8 +22,8 @@ We are completing the expansion of the **Base Mainnet (Chain ID: 8453)** swap ag
 
 | Component | Repository | Status | Next Milestone |
 | :--- | :--- | :--- | :--- |
-| **Routing & Quoting Engine** | `deserialize-evm-agg` (this repo) | **Quoting works on all 7 DEXes**<br>V2/V4 units and logic fixes (Oct 4 2026, §8) and the V3 edge cost plus on-chain route checking (Oct 5 2026, §11) were verified against live Base pools. There are no automated tests in the repo. | The V4 execution path needs SDK and adapter work (§9.2). |
-| **Execution Smart Contracts** | `deserialize-evm-swap-aggregator-contracts` | **Contracts Written**<br>`UniswapV2Adapter.sol`, `AerodromeV2Adapter.sol`, `UniswapV4Adapter.sol` prepared. `.env.base` configured. | Run deployment scripts on Base Mainnet, whitelist adapters on `SwapProxy`, and map factories in `AdapterTracker`. |
+| **Routing & Quoting Engine** | `deserialize-evm-agg` (this repo) | **Quoting and execution live on all 7 DEXes**<br>Uniswap V3, PancakeSwap V3, Aerodrome V3, Uniswap V2, PancakeSwap V2, Aerodrome V2 and Uniswap V4 (2 registered WETH/USDC pools) execute on-chain through the Oct 5 2026 deployment, including ERC-20-input swaps (verified by `eth_call` dry runs, §12). There are no automated tests in the repo. | Add a quote-vs-market value guard (§12.5). Register more V4 pools as needed (§12.4). |
+| **Execution Smart Contracts** | `deserialize-evm-swap-aggregator-contracts` | **Deployed & migrated Oct 5, 2026** (§4)<br>`MultiRouteSwapV2` proxy, `AdapterTracker` and 7 adapters, all registered and whitelisted; the PancakeSwap V3, Aerodrome V3 and Uniswap V4 adapters were replaced the same day (§12.3); V4 WETH/USDC fee 500 and 3000 pools registered (§12.4). | None blocking. |
 
 ---
 
@@ -54,7 +54,7 @@ The system operates across two decoupled layers: **Off-chain Routing** and **On-
 │       │ 1. Approve (ERC-20 tokenIn)                         │
 │       ▼                                                     │
 │ [SwapProxy] ──────────(returnAdapter)────────► [AdapterTracker]
-│   0xADb00...                                    0xf0c3D...  │
+│   0x2B7b1...                                    0xbC9eB...  │
 │       │                                             │       │
 │       │ 2. swap(hops, minAmountOut, partnerFees)    │       │
 │       ▼                                             ▼       │
@@ -72,20 +72,29 @@ The system operates across two decoupled layers: **Off-chain Routing** and **On-
 
 | DEX Identifier | Protocol Architecture | Factory / Manager Address | On-Chain Adapter Address | Off-Chain Route Provider | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `UNISWAP_V3_BASE` | Uniswap V3 (Concentrated Liquidity) | `0x33128a8fC17869897dcE68Ed026d694621f6FDfD` | `0x4001564cf4e1DBBaA20e7E24be51abaf2eaA4d3B` | `UniswapV3BaseRoute` | **Active & Live** |
-| `PANCAKE_V3_BASE` | PancakeSwap V3 (Concentrated Liquidity) | `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` | `0x27DfBFcE2a4AAa2a08DDcD71Ad298AcFD81AE4Dc` | `PancakeV3Route` | **Active & Live** |
-| `AERODROME_V3_BASE` | Aerodrome Slipstream (CLAMM) | `0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A` | `0xEA81B9CcFBF6053B33429f103D11dc7a060f7869` | `AerodromeV3Route` | **Active & Live** |
-| `UNISWAP_V2_BASE` | Uniswap V2 ($x \cdot y = k$) | `0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6` | *Awaiting deployment* | `UniswapV2BaseRoute` | **Ready for deployment** |
-| `PANCAKE_V2_BASE` | PancakeSwap V2 ($x \cdot y = k$) | `0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E` | *Shares Uni V2 Adapter* | `PancakeV2BaseRoute` | **Ready for deployment** |
-| `AERODROME_V2_BASE`| Aerodrome Classic (Volatile + Stable) | `0x420DD381b31aEf6683db6B902084cB0FFECe40Da` | *Awaiting deployment* | `AerodromeV2BaseRoute` | **Ready for deployment** |
-| `UNISWAP_V4_BASE` | Uniswap V4 (Singleton `PoolManager`) | `0x498581fF718922c3f8e6A244956aF099B2652b2b` | *Awaiting deployment* | `UniswapV4BaseRoute` | **Ready for deployment** |
+Adapters below are the Oct 2026 deployment, as returned by `AdapterTracker.returnAdapter(factory)`.
+
+| DEX Identifier | Protocol Architecture | Factory / Manager Address | On-Chain Adapter Address (type) | Off-Chain Route Provider | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `UNISWAP_V3_BASE` | Uniswap V3 (Concentrated Liquidity) | `0x33128a8fC17869897dcE68Ed026d694621f6FDfD` | `0x8968693f32064DaD06fc7D28945Bc0bed17cA084` (ZiaV3Adapter) | `UniswapV3BaseRoute` | **Live** (execution verified) |
+| `PANCAKE_V3_BASE` | PancakeSwap V3 (Concentrated Liquidity) | `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` | `0xA1744F79bd09B6fa3d830Af6219e28FE3E184435` (PancakeV3Adapter) | `PancakeV3Route` | **Live** (execution verified) |
+| `AERODROME_V3_BASE` | Aerodrome Slipstream (CLAMM) | `0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A` | `0xd33E95a846070b352C4928C4B9167F9ba5F027ff` (ZiaV3Adapter) | `AerodromeV3Route` | **Live** (execution verified) |
+| `UNISWAP_V2_BASE` | Uniswap V2 ($x \cdot y = k$) | `0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6` | `0xBB507A2fD265ADE1Cf56B0430DeEcF92694fFF81` (UniswapV2Adapter, fee 9970) | `UniswapV2BaseRoute` | **Live** (execution verified) |
+| `PANCAKE_V2_BASE` | PancakeSwap V2 ($x \cdot y = k$) | `0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E` | `0x66f3A66F4019419691B15284AC501c3b73A829D9` (UniswapV2Adapter, fee 9975) | `PancakeV2BaseRoute` | **Live** (execution verified) |
+| `AERODROME_V2_BASE`| Aerodrome Classic (Volatile + Stable) | `0x420DD381b31aEf6683db6B902084cB0FFECe40Da` | `0x967AB6b873862F1C8a3fb40490D2180D8993b137` (AerodromeV2Adapter) | `AerodromeV2BaseRoute` | **Live** (execution verified) |
+| `UNISWAP_V4_BASE` | Uniswap V4 (Singleton `PoolManager`) | `0x498581fF718922c3f8e6A244956aF099B2652b2b` | `0xb5fD1C6122db94e52EBc697cca971C5759A54598` (UniswapV4Adapter, pool handles) | `UniswapV4BaseRoute` | **Live** for registered ERC-20 pools (WETH/USDC fee 500 and 3000, execution verified); other V4 pools are quote-gated out (§12.4) |
+
+Decommissioned on Oct 5, 2026 (removed from the tracker and un-whitelisted): `0xe7F78cCf…70ae` and `0xc42b9C96…1b6E` (JaineV3Adapter, wrong swap callback for Base pools), and `0x80FD1e9F…7ba9` (first UniswapV4Adapter, which treated exact-input as exact-output).
 
 ---
 
 ## 4. Key On-Chain Protocol Addresses (Base Mainnet)
 
-* **SwapProxy (Execution Router):** `0xADb0018bCF10b7dD84B7C3e2D92889185DA41f45`
-* **AdapterTracker (Factory -> Adapter Registry):** `0xf0c3D4dE61d78742Eb51dffA29A109aCE473892F`
+* **SwapProxy (Execution Router, `MultiRouteSwapV2` ERC-1967 proxy):** `0x2B7b17165aAe7Ce6cC390920282473720Db8b30b`
+  * Implementation: `0xcB62D3532F37fE687f9545A87BFD3fe249694b47`
+* **AdapterTracker (Factory -> Adapter Registry):** `0xbC9eB41b40be480541b54A4189bB82c4340378a7`
+* **Admin:** `0x3a2e61653aF437F90fBB9Fde5B57ec080e88D19d`
+* *Superseded (pre-Oct 2026):* SwapProxy `0xADb0018bCF10b7dD84B7C3e2D92889185DA41f45`, AdapterTracker `0xf0c3D4dE61d78742Eb51dffA29A109aCE473892F`.
 * **Wrapped Ether (WETH):** `0x4200000000000000000000000000000000000006`
 * **Native ETH Sentinel:** `0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`
 * **Uniswap V4 StateView:** `0xa3c0c9b65bad0b08107aa264b0f3db444b867a71`
@@ -100,9 +109,9 @@ When deploying new adapters from `deserialize-evm-swap-aggregator-contracts`:
 ### 5.1 Environment Configuration (`.env.base`)
 ```env
 # Core Protocol Addresses
-SWAP_ROUTER_ADDRESS=0xADb0018bCF10b7dD84B7C3e2D92889185DA41f45
+SWAP_ROUTER_ADDRESS=0x2B7b17165aAe7Ce6cC390920282473720Db8b30b
 WA0GI_ADDRESS=0x4200000000000000000000000000000000000006 # Canonical Base WETH
-ADAPTER_TRACKER_ADDRESS=0xf0c3D4dE61d78742Eb51dffA29A109aCE473892F
+ADAPTER_TRACKER_ADDRESS=0xbC9eB41b40be480541b54A4189bB82c4340378a7
 
 # Factory Addresses
 AERODROME_FACTORY=0x420DD381b31aEf6683db6B902084cB0FFECe40Da
@@ -110,24 +119,26 @@ V4_POOL_MANAGER=0x498581fF718922c3f8e6A244956aF099B2652b2b
 ```
 
 ### 5.2 Post-Deployment On-Chain Handshake
-Every newly deployed adapter **must** be registered via two on-chain calls:
+Every newly deployed adapter needs:
 
-1. **Whitelist on `SwapProxy`**:
+1. **Authorize the router on the adapter** (adapters reject callers they haven't authorized):
    ```solidity
-   SwapProxy.registerAdapter(adapterAddress);
+   adapter.authorize(SwapProxy); // SwapProxy = 0x2B7b17165aAe7Ce6cC390920282473720Db8b30b
    ```
-2. **Bind Factory on `AdapterTracker`**:
+   Adapters constructed with the proxy address already authorize it.
+2. **Bind the factory and whitelist, in one call.** `trackAdapter` sets `factory → adapter` and calls `SwapProxy.registerAdapter(adapter)` itself:
    ```solidity
-   // For Uniswap V2 & PancakeSwap V2 (single shared adapter):
-   AdapterTracker.trackAdapter(0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6, v2AdapterAddress);
-   AdapterTracker.trackAdapter(0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E, v2AdapterAddress);
-
-   // For Aerodrome Classic (V2):
-   AdapterTracker.trackAdapter(0x420DD381b31aEf6683db6B902084cB0FFECe40Da, aeroV2AdapterAddress);
-
-   // For Uniswap V4:
-   AdapterTracker.trackAdapter(0x498581fF718922c3f8e6A244956aF099B2652b2b, v4AdapterAddress);
+   AdapterTracker.trackAdapter(factory, adapterAddress, SwapProxy);
+   // Uniswap V2:   factory 0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6 (adapter feeNumerator 9970)
+   // PancakeSwap V2: factory 0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E (adapter feeNumerator 9975)
+   // Aerodrome V2: factory 0x420DD381b31aEf6683db6B902084cB0FFECe40Da
+   // Uniswap V4:   "factory" = PoolManager 0x498581fF718922c3f8e6A244956aF099B2652b2b
    ```
+   Re-calling `trackAdapter` for a factory replaces its adapter.
+3. **Verify before relying on it** (all three checks are read-only):
+   * `AdapterTracker.returnAdapter(factory)` returns the new adapter.
+   * `SwapProxy.whitelistedAdapters(adapter)` is `true`.
+   * **V3-style adapters implement the callback the pools actually call**: Uniswap V3 and Aerodrome Slipstream pools call `uniswapV3SwapCallback`; PancakeSwap V3 pools call `pancakeV3SwapCallback`. An adapter with the wrong callback deploys and registers fine but reverts on every swap (§12.3). The quickest end-to-end check is an `eth_call` dry run of a `/swap` transaction with a state-override ETH balance (§12.2).
 
 ---
 
@@ -238,11 +249,11 @@ All `getAmountOut` and `simulateTransaction` methods in these three calculators 
 ### 9.1 ~~V3 edge cost is wrong for mixed-decimal pairs~~ (fixed Oct 5, 2026, see §11)
 The V3 edge cost divided a raw `amountOut` by a human spot price, scoring ≈100 on 18→6-decimal hops and 0 on 6→18 hops. Combined with thin pools this produced quotes like 1 ETH → 8.30 DAI and 0.01 ETH → ~1.1k HIGHER (market ~135k).
 
-### 9.2 V4 execution path
-`constructHop` in `swap-contract-sdk` calls `ethers.getAddress(poolAddress)`, which throws on a bytes32 V4 poolId. The hop tuple `[tokenIn, tokenOut, adapter, pool, "0"]` also has no room for the PoolKey (`fee`, `tickSpacing`, `hooks`, native vs WETH currency). The SDK and `UniswapV4Adapter` need a hop format that carries the PoolKey. The adapter must also wrap/unwrap when the PoolKey uses native ETH but the route token is WETH (§8.2 #4). Only hookless (`hooks = address(0)`) V4 pools are discovered.
+### 9.2 V4 execution path (partly resolved Oct 5, 2026, see §12.4)
+The hop format is resolved: the migrated `UniswapV4Adapter` takes a **pool handle** (the low 160 bits of the 32-byte poolId) in the hop's 20-byte pool field and resolves it to the registered PoolKey; V4 hops now send that handle. Still open: the adapter executes only admin-registered pools (one fee tier per pair), and it cannot settle native ETH, so native-ETH V4 pools, where most V4 ETH liquidity sits, are quote-only and never routed. Only hookless (`hooks = address(0)`) V4 pools are discovered.
 
 ### 9.3 Other routing issues observed
-* `AllRoute.getNewGraph` keeps only the **first** edge per token pair per DEX, so other pools of the same DEX on that pair (e.g. a second Aerodrome V2 pool) never reach the ALL graph. V3 edges also appear duplicated (×4) in `ALL_BASE`.
+* ~~`AllRoute.getNewGraph` keeps only the **first** edge per token pair per DEX~~ (fixed Oct 5, 2026, §12.6).
 * Dijkstra enqueues nodes by the single-edge cost instead of the accumulated path cost (`packages/graph/graph.ts`).
 * New DEXes are only discovered for a pair when that pair is missing from the ALL graph. Pairs already indexed via V3 never get V2/V4 pools until the indexer or a discovery adds them.
 * Discovery fans out to 5 candidate pairs × 7 DEXes. With the configured RPC this regularly hits request timeouts (a cold-pair quote took several minutes), and pools can be silently missed.
@@ -317,3 +328,78 @@ The frontend showed **1 ETH → 8.30 DAI** (market ≈ 2,712). Every direct WETH
 * **Cache refresh.** After deploying, run an edge refresh (the indexer's `refreshExistingEdges`, or the equivalent per-route `getAllExistingPoolData` → `refreshGraphEdges` → rebuild `ALL_BASE`) so cached edges carry USD prices; edges without them fall back to spot-price cost. This was done on the shared Redis on Oct 5 (194 edges across 7 DEXes, all priced). Scripts doing this outside the server must install the `BigInt.prototype.toJSON` shim used by the server and indexer, otherwise writing V3 pool data fails.
 * **RPC load.** Each quote now runs a few extra quoter calls (≤ 6 pools per hop × up to 4 candidate paths, de-duplicated and run in parallel). If the RPC throttles, lower `MAX_POOLS_PER_HOP` in `apps/server/src/index.ts`.
 * **Limits.** Besides Dijkstra's own path, the only candidates are the direct pair and two-hop paths via WETH or USDC. Split routing is not implemented, so `route.hops[].percent` stays 100.
+
+---
+
+## 12. Changelog: New Contract Deployment on Base (Oct 5, 2026)
+
+The contracts were redeployed on Oct 5, 2026 (new `MultiRouteSwapV2` proxy, `AdapterTracker` and 7 adapters). The same day, the PancakeSwap V3, Aerodrome V3 and Uniswap V4 adapters were replaced after the checks below found problems (§12.3). Addresses: §3 and §4.
+
+### 12.1 Backend changes
+| # | Change | Files |
+| :--- | :--- | :--- |
+| 1 | SDK points at the new `SwapProxy` `0x2B7b…b30b` and `AdapterTracker` `0xbC9e…78a7`. Adapters are still resolved on-chain per factory (`returnAdapter`), so replacing an adapter needs no backend change. | `packages/swap-contract-sdk/src/interfaces/js/networkSetup.ts` |
+| 2 | V4 hops send the pool's **handle** (`v4PoolHandleFromId`: the low 160 bits of the poolId) in the hop's 20-byte pool field. The UniswapV4Adapter resolves it to the registered PoolKey, so several fee tiers per pair can be routed. Previously the 32-byte poolId was sent and the SDK threw. | `AllContructor.ts`, `BaseV4Calculator.ts` |
+| 3 | V4 quoting is gated to pools the adapter can execute: both currencies ERC-20 (the adapter cannot settle native ETH), and `getPoolKeyByHandle(handle)` must equal the pool's full PoolKey. Cached for 5 min. Non-executable pools simulate to 0, so the route checker (§11) picks another pool. Configured via `adapterAddress` in the V4 DEX config. | `BaseV4Calculator.ts`, `base/uniswapV4/index.ts` |
+| 4 | `DISABLED_DEX_IDS` drops a DEX's edges before Dijkstra and the route checker. Empty by default; set the `DISABLED_DEX_IDS` env var (comma-separated dexIds) to take a DEX out of routing without a code change. | `apps/server/src/constants.ts`, `apps/server/src/index.ts` |
+
+### 12.2 Verification (after the adapter migration)
+* **On-chain registration (read-only):**
+  * For all 7 factories, `returnAdapter(factory)` returns the active adapter, and `whitelistedAdapters(adapter)` is `true`. The 3 decommissioned adapters are `false`.
+  * Every adapter has `allowedSwapAddresses(proxy) == true`.
+  * The proxy's ERC-1967 slot points at the implementation, `tracker()` points at the new tracker, and the SDK's `swap(...)` selector `0x5a18dddd` exists in the implementation.
+  * Swap callbacks in the bytecode: Uniswap V3 and Aerodrome V3 implement `uniswapV3SwapCallback`, PancakeSwap V3 implements `pancakeV3SwapCallback`, and V4 implements `unlockCallback`.
+  * V2 adapter `feeNumerator`s: 9970 (Uniswap) and 9975 (PancakeSwap).
+  * The backend's pool handle equals the adapter's `getPoolHandle` for the WETH/USDC tiers.
+* **Single-hop dry runs:** `/swap` transactions for 0.001 ETH → USDC, each forced through one DEX, run with `eth_call` from a throwaway address given ETH via state override. All six non-V4 DEXes execute. V4 reverts with `V4Adapter: Pool not registered`, as expected while no pools are registered; this also confirms the handle reaches the adapter.
+* **End to end** (quote → `/swap` → `eth_call`, all DEXes enabled):
+
+  | Swap | Output | Route | Result |
+  | :--- | :--- | :--- | :---: |
+  | 0.1 ETH → USDC | 268.91 USDC | Uniswap V3 | executes |
+  | 1 ETH → DAI | 2,688.79 DAI | PancakeSwap V3 → Uniswap V3 (via USDC) | executes |
+  | 0.01 ETH → HIGHER | 135,219 HIGHER | Uniswap V3 | executes |
+  | 0.01 ETH → DEGEN | 25,370 DEGEN (market ≈ 25,417) | Aerodrome V3 | executes |
+  | 0.05 ETH → AERO | 157.13 AERO | Aerodrome V3 | executes |
+  | 0.5 ETH → cbBTC | 0.01577849 cbBTC | PancakeSwap V3 → PancakeSwap V3 (via USDC) | executes |
+
+* **Not covered:** ERC-20-input swaps. The dry run cannot set token balances and allowances without per-token storage overrides; the approve + swap flow is unchanged.
+
+### 12.3 Adapter problems found and fixed during the rollout
+* **PancakeSwap V3 / Aerodrome V3:** the first deployment used `JaineV3Adapter` (written for 0G), whose only callback is `jaineV3SwapCallback`. PancakeSwap V3 pools call `pancakeV3SwapCallback` and Aerodrome Slipstream pools call `uniswapV3SwapCallback`, so every swap reverted. They were replaced by `PancakeV3Adapter` (`0xA174…4435`) and a `ZiaV3Adapter` (`0xd33E…27ff`). While they were broken, both DEXes were excluded from routing via `DISABLED_DEX_IDS`.
+* **Uniswap V4:** the first adapter passed `amountSpecified` positive, which V4 treats as exact *output*, and it addressed pools by hooks address with one fee tier per pair. It was replaced by `0xb5fD…4598`, which uses negative (exact-input) amounts and pool handles.
+* **Lesson:** an adapter can deploy and register cleanly and still revert on every swap. Before enabling a DEX, run the §5.2 checks: callback selectors in the bytecode, plus an `eth_call` dry run.
+
+### 12.4 Uniswap V4 pool registration
+The UniswapV4Adapter only swaps pools registered with `registerPool(tokenA, tokenB, hooks, fee, tickSpacing)`, which returns the pool handle. Registered on Oct 5, 2026 (block 52215140), both hookless ERC-20 pools:
+
+| Pair | Fee / tickSpacing | Pool handle (`hop.poolAddress`) | PoolId |
+| :--- | :--- | :--- | :--- |
+| WETH/USDC | 500 / 10 | `0xeF66F1A05165aA7dAC6815D24E807CC6EbD943A0` | `0x90333bb0…bd943a0` |
+| WETH/USDC | 3000 / 60 | `0x5CDb93639E0c7102580A7d345E1144cD5A718f54` | `0x1d8c55f3…5a718f54` |
+
+Verified on-chain: `getPoolKeyByHandle` returns the full PoolKey for each handle, the key hashes to the listed PoolId, and both pools have liquidity. Forced dry runs through each handle execute, both for native ETH input and WETH (ERC-20) input. The router uses a V4 pool only when it gives the best simulated output; in the Oct 5 tests PancakeSwap V3 paid slightly more for WETH/USDC.
+
+To add more V4 pools, register them; the backend picks a registration up within 5 minutes. Native-ETH V4 pools, where most V4 ETH liquidity sits, stay unroutable until the adapter can settle native currency.
+
+### 12.5 Open: no quote-vs-market value guard
+While Aerodrome V3 was excluded, 0.01 ETH → DEGEN quoted **2,163.8 DEGEN** through a thin Uniswap V3 pool, about 91% below market (≈ 25,417). The route checker picks the best *available* executable route, but nothing flags a best route that is still far below market. Recommended: compute the quote's USD value in vs. out from the token prices already fetched, return it as a `priceImpact` / `valueLossPercent` field, and reject or flag quotes beyond a threshold (e.g. 5–10%) so the frontend can warn.
+
+### 12.6 Fix: every pool of a DEX now reaches the routing graph
+`AllRoute.getNewGraph` and `AllRoute.buildGraphFromPools` copy each DEX's edges into the combined `ALL_BASE` graph, but they matched edges by **token pair only**. For every pool a DEX had on a pair, they copied that DEX's *first* edge for the pair. So only one pool per DEX per pair was routable, and the copies showed up as duplicates (the ×4 V3 edges in §9.3). In particular, the registered V4 WETH/USDC pools never reached the router. Edges are now matched by token pair **and** pool address (`poolIdentifier` / `samePool` in `AllContructor.ts`).
+
+Effect on the cached graph (WETH→USDC): before, 22 edges but only 7 distinct pools; after, 22 distinct pools (Uniswap V3 ×4, PancakeSwap V3 ×4, Aerodrome V3 ×4, Uniswap V4 ×6, Aerodrome V2 ×2, Uniswap V2, PancakeSwap V2). The `ALL_BASE` cache was rebuilt on Oct 5.
+
+End to end after the fix (quote → `/swap` → `eth_call`), all executing:
+
+| Swap | Output | Route | Quote time |
+| :--- | :--- | :--- | :--- |
+| 0.01 ETH → USDC | 26.93 USDC | PancakeSwap V3 | 2.7 s |
+| 1 ETH → USDC | 2,693.38 USDC | PancakeSwap V3 | 0.9 s |
+| 0.5 WETH → USDC (ERC-20 input, approve + swap) | 1,346.72 USDC | PancakeSwap V3 | 1.5 s |
+| 1 ETH → DAI | 2,693.26 DAI | PancakeSwap V3 → Uniswap V3 | 1.9 s |
+| 0.01 ETH → DEGEN | 25,441 DEGEN (market ≈ 25,417) | Aerodrome V3 | 1.8 s |
+| 0.5 ETH → cbBTC | 0.01579944 cbBTC | PancakeSwap V3 | 2.0 s |
+| 0.05 ETH → AERO | 158.04 AERO | PancakeSwap V3 | 2.2 s |
+
+ERC-20-input dry runs give the test address a WETH balance and allowance by overriding WETH9 storage (`balanceOf` slot 3, `allowance` slot 4).

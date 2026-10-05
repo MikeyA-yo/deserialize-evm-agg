@@ -98,7 +98,27 @@ export interface V4DexConfig {
     nativeTokenAddress: string;
     stableTokenAddress?: string;
     feeTiers?: { fee: number; tickSpacing: number }[];
+    /**
+     * On-chain UniswapV4Adapter. When set, only pools that adapter can execute are quoted:
+     * ERC-20 currencies (the adapter cannot settle native ETH) whose PoolKey is registered on the
+     * adapter (registerPool) under the pool's handle. Unset = quote-only, no gating.
+     */
+    adapterAddress?: string;
 }
+
+export const V4_ADAPTER_ABI = [
+    "function getPoolKeyByHandle(address) view returns (tuple(address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks))",
+] as const;
+
+/**
+ * The UniswapV4Adapter addresses a pool by its "handle": the low 160 bits of the 32-byte PoolId,
+ * passed in the router hop's 20-byte poolAddress field.
+ */
+export const v4PoolHandleFromId = (poolId: string): string => ethers.getAddress("0x" + poolId.slice(-40));
+
+// Executability lookups are shared across calculator instances (routes are re-created per request)
+const V4_EXECUTABLE_CACHE = new Map<string, { executable: boolean; at: number }>();
+const V4_EXECUTABLE_TTL_MS = 5 * 60 * 1000;
 
 export interface V4PoolKey {
     currency0: string;
@@ -329,6 +349,42 @@ export class BaseV4QuoteCalculator {
     }
 
     /**
+     * Whether the configured UniswapV4Adapter can execute a swap on this pool. The hop carries the
+     * pool's handle (see v4PoolHandleFromId); the adapter resolves it to the PoolKey registered
+     * under that handle, so the registered key must equal this pool's key. The adapter only
+     * settles ERC-20 currencies, so native-ETH pools are never executable.
+     */
+    public async isExecutable(poolKey: V4PoolKey, provider?: JsonRpcProvider): Promise<boolean> {
+        if (!this.dexConfig.adapterAddress) return true;
+        if (
+            poolKey.currency0.toLowerCase() === ethers.ZeroAddress.toLowerCase() ||
+            poolKey.currency1.toLowerCase() === ethers.ZeroAddress.toLowerCase()
+        ) {
+            return false;
+        }
+
+        const handle = v4PoolHandleFromId(this.computePoolId(poolKey));
+        const cacheKey = `${this.dexConfig.adapterAddress.toLowerCase()}:${handle.toLowerCase()}`;
+        const cached = V4_EXECUTABLE_CACHE.get(cacheKey);
+        if (cached && Date.now() - cached.at < V4_EXECUTABLE_TTL_MS) return cached.executable;
+
+        try {
+            const adapter = new Contract(this.dexConfig.adapterAddress, V4_ADAPTER_ABI as any, provider || this.provider);
+            const registered = await adapter.getPoolKeyByHandle(handle);
+            const executable =
+                String(registered.currency0).toLowerCase() === poolKey.currency0.toLowerCase() &&
+                String(registered.currency1).toLowerCase() === poolKey.currency1.toLowerCase() &&
+                Number(registered.fee) === Number(poolKey.fee) &&
+                Number(registered.tickSpacing) === Number(poolKey.tickSpacing) &&
+                String(registered.hooks).toLowerCase() === poolKey.hooks.toLowerCase();
+            V4_EXECUTABLE_CACHE.set(cacheKey, { executable, at: Date.now() });
+            return executable;
+        } catch {
+            return false; // not cached, so a transient RPC failure is retried next time
+        }
+    }
+
+    /**
      * Finds a single V4 pool for a pair and specific fee tier
      */
     public async findPool(
@@ -525,6 +581,13 @@ export class BaseV4QuoteCalculator {
             return { amountOut: "0", pool: poolAddress };
         }
         const { poolKey, zeroForOne } = resolved;
+
+        // A pool the on-chain adapter cannot execute must not be quoted: the swap would revert
+        // (or trade a different registered fee tier than the one quoted).
+        if (!(await this.isExecutable(poolKey, prov))) {
+            console.log(`[V4:NOT_EXECUTABLE] Pool ${poolAddress} (fee ${poolKey.fee}, ${poolKey.currency0 === ethers.ZeroAddress ? "native ETH" : "ERC-20"}) is not executable by the V4 adapter; skipping`);
+            return { amountOut: "0", pool: poolAddress };
+        }
 
         try {
             const quoter = new Contract(

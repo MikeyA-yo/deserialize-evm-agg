@@ -13,6 +13,7 @@ export const UNISWAP_V4_BASE_CONFIG: V4DexConfig = {
     wrappedNativeTokenAddress: chain.wrappedNativeTokenAddress,
     nativeTokenAddress: chain.nativeTokenAddress,
     feeTiers: V4_DEFAULT_FEE_TIERS,
+    adapterAddress: "0xb5fD1C6122db94e52EBc697cca971C5759A54598", // UniswapV4Adapter with pool handles (Oct 5 2026 migration)
 };
 
 export const UniswapV4BaseRoute = createV4Route(

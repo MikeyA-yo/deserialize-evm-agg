@@ -9,7 +9,7 @@ This document specifies the API endpoints, on-chain contracts, routing infrastru
 | Component | Status | Details |
 | :--- | :--- | :--- |
 | **Aggregator Smart Contracts** | **Deployed & Active** | Already deployed on Base Mainnet. No custom contracts need to be written or deployed. |
-| **DEX Adapters** | **Active & Configured** | Adapters registered for Uniswap V3, PancakeSwap V3, and Aerodrome SlipStream. |
+| **DEX Adapters** | **Redeployed Oct 5, 2026** | Swaps execute on Uniswap V3, PancakeSwap V3, Aerodrome V3, Uniswap V2, PancakeSwap V2 and Aerodrome V2 (verified on-chain). Uniswap V4 routes through the pools registered on its adapter (WETH/USDC fee 500 and 3000). Quotes only use routes that can execute, so no frontend change is needed. |
 | **Pricing Engine** | **Operational** | Dynamic price queries across Base tokens (`GET /base/tokenPrice/:tokenAddress`). |
 | **Quote Engine** | **Operational** | Finds optimal routes across Base DEX pools (`POST /base/quote`). |
 | **Route Visualization** | **Available** | Every quote includes a `route` object (token path, DEX per hop, per-hop amounts) for rendering the swap route (§3.4.1). |
@@ -40,15 +40,23 @@ The aggregator routes swaps through an on-chain proxy pattern that interacts wit
 
 ### Deployed Addresses on Base:
 
-- **SwapProxy:** `0xADb0018bCF10b7dD84B7C3e2D92889185DA41f45`
-- **AdapterTracker:** `0xf0c3D4dE61d78742Eb51dffA29A109aCE473892F`
+- **SwapProxy:** `0x2B7b17165aAe7Ce6cC390920282473720Db8b30b` (new Oct 2026; replaces `0xADb0018b…1f45`)
+- **AdapterTracker:** `0xbC9eB41b40be480541b54A4189bB82c4340378a7` (new Oct 2026; replaces `0xf0c3D4dE…892F`)
 - **Native ETH Placeholder:** `0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`
 - **Wrapped Ether (WETH):** `0x4200000000000000000000000000000000000006`
 
 ### Registered DEX Adapters on Base:
-- **Uniswap V3 Factory** (`0x33128a8fC17869897dcE68Ed026d694621f6FDfD`) $\rightarrow$ Adapter: `0x4001564cf4e1DBBaA20e7E24be51abaf2eaA4d3B`
-- **PancakeSwap V3 Factory** (`0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865`) $\rightarrow$ Adapter: `0x27DfBFcE2a4AAa2a08DDcD71Ad298AcFD81AE4Dc`
-- **Aerodrome SlipStream Factory** (`0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A`) $\rightarrow$ Adapter: `0xEA81B9CcFBF6053B33429f103D11dc7a060f7869`
+| DEX | Factory | Adapter | Executable |
+| :--- | :--- | :--- | :---: |
+| Uniswap V3 | `0x33128a8fC17869897dcE68Ed026d694621f6FDfD` | `0x8968693f32064DaD06fc7D28945Bc0bed17cA084` | ✅ |
+| PancakeSwap V3 | `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` | `0xA1744F79bd09B6fa3d830Af6219e28FE3E184435` | ✅ |
+| Aerodrome Slipstream (V3) | `0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A` | `0xd33E95a846070b352C4928C4B9167F9ba5F027ff` | ✅ |
+| Uniswap V2 | `0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6` | `0xBB507A2fD265ADE1Cf56B0430DeEcF92694fFF81` | ✅ |
+| PancakeSwap V2 | `0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E` | `0x66f3A66F4019419691B15284AC501c3b73A829D9` | ✅ |
+| Aerodrome V2 | `0x420DD381b31aEf6683db6B902084cB0FFECe40Da` | `0x967AB6b873862F1C8a3fb40490D2180D8993b137` | ✅ |
+| Uniswap V4 | PoolManager `0x498581fF718922c3f8e6A244956aF099B2652b2b` | `0xb5fD1C6122db94e52EBc697cca971C5759A54598` | ✅ registered pools: WETH/USDC fee 500 and 3000 |
+
+The frontend never needs adapter addresses. The backend resolves them; they are listed here for reference.
 
 ---
 
@@ -383,7 +391,7 @@ Constructs the raw EVM transaction array (`transactions`) for the user's wallet 
   "transactions": [
     {
       "from": "0xYourUserWalletAddress",
-      "to": "0xADb0018bCF10b7dD84B7C3e2D92889185DA41f45",
+      "to": "0x2B7b17165aAe7Ce6cC390920282473720Db8b30b",
       "data": "0x...",
       "value": "1000000000000000000"
     }
@@ -391,7 +399,7 @@ Constructs the raw EVM transaction array (`transactions`) for the user's wallet 
 }
 ```
 
-> **Note on Approvals:** If `tokenA` is an ERC-20 token and the user's current allowance for `SwapProxy` is insufficient, the API automatically prepends an ERC-20 `approve(0xADb0018bCF10b7dD84B7C3e2D92889185DA41f45, amountIn)` transaction to `transactions[0]`.
+> **Note on Approvals:** If `tokenA` is an ERC-20 token and the user's current allowance for `SwapProxy` is insufficient, the API automatically prepends an ERC-20 `approve(0x2B7b17165aAe7Ce6cC390920282473720Db8b30b, amountIn)` transaction to `transactions[0]`.
 
 ---
 
@@ -481,19 +489,20 @@ for (const tx of transactions) {
 
 ## 5. Verified Base Tokens & Test Results
 
-The following pairs were verified live against Base Mainnet RPC and pools:
+Verified on Oct 5, 2026 against the new contracts: quote → `POST /base/swap` → on-chain `eth_call` dry run of the returned transaction.
 
-| Swap Pair | Direction | Quoted DEX | Route Status |
+| Swap | Quoted output | Route | Execution |
 | :--- | :--- | :--- | :---: |
-| **ETH $\rightarrow$ USDC** | Native $\rightarrow$ ERC-20 | PancakeSwap V3 | ✅ Verified |
-| **WETH $\rightarrow$ USDC** | ERC-20 $\rightarrow$ ERC-20 | PancakeSwap V3 | ✅ Verified |
-| **USDC $\rightarrow$ WETH** | ERC-20 $\rightarrow$ ERC-20 | PancakeSwap V3 | ✅ Verified |
-| **ETH $\rightarrow$ CLANKER** | Native $\rightarrow$ ERC-20 | Aerodrome V3 | ✅ Verified |
-| **ETH $\rightarrow$ AERO** | Native $\rightarrow$ ERC-20 | PancakeSwap V3 | ✅ Verified |
-| **AERO $\rightarrow$ ETH** | ERC-20 $\rightarrow$ Native | Aerodrome V3 | ✅ Verified |
-| **ETH $\rightarrow$ DEGEN** | Native $\rightarrow$ ERC-20 | Uniswap V3 | ✅ Verified |
-| **DEGEN $\rightarrow$ ETH** | ERC-20 $\rightarrow$ Native | Aerodrome V3 | ✅ Verified |
-| **ETH $\rightarrow$ BRETT** | Native $\rightarrow$ ERC-20 | PancakeSwap V3 | ✅ Verified |
+| **0.1 ETH → USDC** | 268.91 USDC | Uniswap V3 | ✅ executes |
+| **1 ETH → DAI** | 2,688.79 DAI | PancakeSwap V3 → Uniswap V3 (via USDC) | ✅ executes |
+| **0.01 ETH → HIGHER** | 135,219 HIGHER | Uniswap V3 | ✅ executes |
+| **0.01 ETH → DEGEN** | 25,370 DEGEN | Aerodrome V3 | ✅ executes |
+| **0.05 ETH → AERO** | 157.13 AERO | Aerodrome V3 | ✅ executes |
+| **0.5 ETH → cbBTC** | 0.01577849 cbBTC | PancakeSwap V3 → PancakeSwap V3 (via USDC) | ✅ executes |
+
+Single-hop ETH → USDC transactions forced through each of Uniswap V3, PancakeSwap V3, Aerodrome V3, Uniswap V2, PancakeSwap V2 and Aerodrome V2 also execute, as do Uniswap V4 swaps through both registered WETH/USDC pools. ERC-20-input swaps (approve + swap, e.g. 0.5 WETH → 1,346.72 USDC) were dry-run too and execute.
+
+> **No value guard yet.** The API returns the best *executable* route, but it does not yet flag a quote that is far below market price (e.g. when only thin pools exist for a token). Until it does, consider showing a warning when the quote's USD value out is much lower than the USD value in (using `GET /base/tokenPrice/:token` for both tokens).
 
 ---
 
@@ -584,3 +593,7 @@ When the frontend reports that "something isn't working", check the backend term
 - **Cause:** `route` is optional. It is omitted if the server could not build it (e.g. token metadata lookup failed), while the quote itself is still valid.
 - **Fix:** Guard with `if (quote.route)` and hide the panel. Never block the swap on `route`; `POST /swap` only needs `routePlan`.
 
+### 7. Approvals after the Oct 2026 contract redeployment
+- **What changed:** the spender is now the new SwapProxy `0x2B7b17165aAe7Ce6cC390920282473720Db8b30b`. Allowances users gave the old proxy (`0xADb0018b…1f45`) do not carry over.
+- **What happens:** nothing breaks. `POST /base/swap` checks the allowance against the new proxy and prepends an `approve` transaction when needed, so users with old approvals see one extra approve on their next ERC-20 swap.
+- **Frontend action:** if the frontend hardcodes the proxy address anywhere (allowance checks, approval UI, "revoke" links, explorer links), update it to `0x2B7b17165aAe7Ce6cC390920282473720Db8b30b`. Otherwise just send the transactions `/swap` returns, in order.

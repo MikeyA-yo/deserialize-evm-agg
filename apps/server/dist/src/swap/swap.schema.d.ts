@@ -88,57 +88,57 @@ export declare const SwapRequestSchema: z.ZodObject<{
                 aToB: z.ZodBoolean;
                 dexId: z.ZodString;
             }, "strip", z.ZodTypeAny, {
+                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
-                aToB: boolean;
             }, {
+                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
-                aToB: boolean;
             }>, "many">;
             dexFactory: z.ZodOptional<z.ZodString>;
             dexId: z.ZodString;
             isNativeIn: z.ZodBoolean;
             isNativeOut: z.ZodBoolean;
         }, "strip", z.ZodTypeAny, {
+            amountOut: number;
             tokenA: string;
             tokenB: string;
             amountIn: number;
             dexId: string;
-            amountOut: number;
             tokenPrice: number;
             routePlan: {
+                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
-                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
             feeRate?: number | undefined;
             dexFactory?: string | undefined;
         }, {
+            amountOut: string | number;
             tokenA: string;
             tokenB: string;
             amountIn: string | number;
             dexId: string;
-            amountOut: string | number;
             tokenPrice: string | number;
             routePlan: {
+                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
-                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
@@ -159,19 +159,19 @@ export declare const SwapRequestSchema: z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         publicKey: string;
         quote: {
+            amountOut: number;
             tokenA: string;
             tokenB: string;
             amountIn: number;
             dexId: string;
-            amountOut: number;
             tokenPrice: number;
             routePlan: {
+                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
-                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
@@ -187,19 +187,19 @@ export declare const SwapRequestSchema: z.ZodObject<{
     }, {
         publicKey: string;
         quote: {
+            amountOut: string | number;
             tokenA: string;
             tokenB: string;
             amountIn: string | number;
             dexId: string;
-            amountOut: string | number;
             tokenPrice: string | number;
             routePlan: {
+                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
-                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
@@ -224,19 +224,19 @@ export declare const SwapRequestSchema: z.ZodObject<{
     body: {
         publicKey: string;
         quote: {
+            amountOut: number;
             tokenA: string;
             tokenB: string;
             amountIn: number;
             dexId: string;
-            amountOut: number;
             tokenPrice: number;
             routePlan: {
+                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
-                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;
@@ -257,19 +257,19 @@ export declare const SwapRequestSchema: z.ZodObject<{
     body: {
         publicKey: string;
         quote: {
+            amountOut: string | number;
             tokenA: string;
             tokenB: string;
             amountIn: string | number;
             dexId: string;
-            amountOut: string | number;
             tokenPrice: string | number;
             routePlan: {
+                aToB: boolean;
                 tokenA: string;
                 tokenB: string;
                 dexId: string;
                 poolAddress: string;
                 fee: number;
-                aToB: boolean;
             }[];
             isNativeIn: boolean;
             isNativeOut: boolean;

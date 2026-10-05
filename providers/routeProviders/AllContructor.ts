@@ -2,6 +2,7 @@ import { DexCache } from "@deserialize-evm-agg/cache";
 import { ArrayBiMap, Edge, EdgeData, FunctionToMutateTheEdgeCostType, Graph, TokenBiMap } from "@deserialize-evm-agg/graph";
 import { IPath } from "deserialize-evm-server-sdk";
 import { JsonRpcProvider, TransactionRequest } from "ethers";
+import { v4PoolHandleFromId } from "./BaseV4Calculator";
 
 import { DeserializeRoutePlan, IRoute } from "./IRoute";
 import Decimal from "decimal.js";
@@ -10,6 +11,14 @@ import { ChainConfig, UniswapV3QuoteCalculator } from "./UniswapV3Calculator";
 import { createSwapTX } from "@deserialize-evm-agg/swap-contract-sdk";
 import { NetworkType } from "./constants";
 import { wrap } from "module";
+
+/** Pool address (or V4 poolId) of a DEX pool record, matching the edges' edgeData.poolAddress */
+const poolIdentifier = (pool: any): string | undefined =>
+    (pool?.poolAddress ?? pool?.pairAddress ?? pool?.poolId)?.toLowerCase?.();
+
+/** True if the edge belongs to the given pool (if no pool id is known, any edge for the pair matches) */
+const samePool = (edge: Edge<EdgeData>, poolId: string | undefined): boolean =>
+    poolId === undefined || String(edge.edgeData.poolAddress).toLowerCase() === poolId;
 
 export type AllRouteConstructor<DexIdTypes extends string> = new (
     provider: JsonRpcProvider,
@@ -457,12 +466,14 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
                         return;
                     }
 
+                    // Match this pool's own edges (a DEX can have several pools per pair, e.g. fee tiers)
+                    const poolId = poolIdentifier(pool);
                     const dexDirectEdge = routeGraph[fromTokenIndex]?.find(
-                        (r) => r.from === fromTokenIndex && r.to === toTokenIndex
+                        (r) => r.from === fromTokenIndex && r.to === toTokenIndex && samePool(r, poolId)
                     );
 
                     const dexReverseEdge = routeGraph[toTokenIndex]?.find(
-                        (r) => r.from === toTokenIndex && r.to === fromTokenIndex
+                        (r) => r.from === toTokenIndex && r.to === fromTokenIndex && samePool(r, poolId)
                     );
 
                     if (!dexDirectEdge || !dexReverseEdge) {
@@ -625,12 +636,14 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
                         }
 
                         // Get edges from the route's graph
+                        // Match this pool's own edges (a DEX can have several pools per pair, e.g. fee tiers)
+                        const poolId = poolIdentifier(pool);
                         const dexDirectEdge = routeGraphForNewPools[fromTokenIndexInRoute]?.find(
-                            (r) => r.from === fromTokenIndexInRoute && r.to === toTokenIndexInRoute
+                            (r) => r.from === fromTokenIndexInRoute && r.to === toTokenIndexInRoute && samePool(r, poolId)
                         );
 
                         const dexReverseEdge = routeGraphForNewPools[toTokenIndexInRoute]?.find(
-                            (r) => r.from === toTokenIndexInRoute && r.to === fromTokenIndexInRoute
+                            (r) => r.from === toTokenIndexInRoute && r.to === fromTokenIndexInRoute && samePool(r, poolId)
                         );
 
                         if (!dexDirectEdge || !dexReverseEdge) {
@@ -845,9 +858,13 @@ export class AllRoute<DexIdTypes extends string> implements IRoute<any, DexIdTyp
             }
             const replaceIn = isNativeIn && isFirstHop && route.tokenA.toLowerCase() === warpedTokenAddress.toLowerCase();
             const replaceOut = isNativeOut && isLastHop && route.tokenB.toLowerCase() === warpedTokenAddress.toLowerCase();
+            // Uniswap V4 pools are identified by a 32-byte poolId, not a contract address. The
+            // UniswapV4Adapter takes the pool's handle (low 160 bits of the poolId) in the hop's
+            // 20-byte pool field and resolves it to the registered PoolKey.
+            const isV4PoolId = route.poolAddress.length === 66;
             const path: IPath = {
                 factory: config.factoryAddress,
-                poolAddress: route.poolAddress,
+                poolAddress: isV4PoolId ? v4PoolHandleFromId(route.poolAddress) : route.poolAddress,
                 tokenIn: replaceIn ? nativeTokenAddress : route.tokenA,
                 tokenOut: replaceOut ? nativeTokenAddress : route.tokenB,
                 fee: route.fee,
