@@ -11,12 +11,23 @@ const redis_1 = require("redis");
 const config_1 = require("./config");
 const errors_api_1 = require("./errors/errors.api");
 const decimal_js_1 = __importDefault(require("decimal.js"));
+const constants_1 = require("./constants");
 BigInt.prototype.toJSON = function () {
     const int = Number.parseInt(this.toString());
     return int ?? this.toString();
 };
 // Max pools simulated per hop when checking candidate routes against the on-chain quoters
 const MAX_POOLS_PER_HOP = 6;
+/**
+ * Drops edges of DEXes whose adapters cannot execute (DISABLED_DEX_IDS) so they are never
+ * quoted. Returns a filtered copy; the cached graph is not modified.
+ */
+const withoutDisabledDexes = (graph) => {
+    if (constants_1.DISABLED_DEX_IDS.length === 0)
+        return graph;
+    const disabled = new Set(constants_1.DISABLED_DEX_IDS);
+    return graph.map((edges) => (edges ?? []).filter((e) => !disabled.has(e.edgeData.dexId)));
+};
 /**
  * The graph's edge costs use in-range math and cannot see tick boundaries or stale pools, so
  * Dijkstra can pick a pool that looks deep but returns very little (e.g. a thin WETH/DAI pool
@@ -145,7 +156,7 @@ const getBestRoutes = async (network, fromTokenString, toTokenString, amount, _p
         console.warn(`      [ROUTER:PRICE_WARN] Token price lookup failed, continuing quote with keyRate 0:`, error?.message);
     }
     let { tokenBiMap } = await RouteJsonRpcProvider.getTokenBiMap();
-    let graph = await RouteJsonRpcProvider.getGraph();
+    let graph = withoutDisabledDexes(await RouteJsonRpcProvider.getGraph());
     let path = [];
     let fromIndex = tokenBiMap.getByValue(fromTokenString.toLowerCase());
     let toIndex = tokenBiMap.getByValue(toTokenString.toLowerCase());
@@ -158,7 +169,7 @@ const getBestRoutes = async (network, fromTokenString, toTokenString, amount, _p
         console.log(`      [ROUTER:AUTO_DISCOVERY] Token not found in tokenBiMap. Querying DEX factories on-chain to discover pools for ${fromTokenString} / ${toTokenString}...`);
         const updated = await RouteJsonRpcProvider.findUpdateTokenPairPools(fromTokenString, toTokenString);
         tokenBiMap = updated.newTokenBiMap;
-        graph = updated.newGraph;
+        graph = withoutDisabledDexes(updated.newGraph);
         syncIndexes();
         if (fromIndex === undefined || toIndex === undefined) {
             console.error(`      [ROUTER:ERROR] Token pair still not found after on-chain discovery!`);
@@ -173,7 +184,7 @@ const getBestRoutes = async (network, fromTokenString, toTokenString, amount, _p
         console.log(`      [ROUTER:AUTO_DISCOVERY] Zero edges found. Re-indexing on-chain pools...`);
         const updated = await RouteJsonRpcProvider.findUpdateTokenPairPools(fromTokenString, toTokenString);
         tokenBiMap = updated.newTokenBiMap;
-        graph = updated.newGraph;
+        graph = withoutDisabledDexes(updated.newGraph);
         syncIndexes();
         if (fromIndex === undefined || toIndex === undefined) {
             throw new Error(`Token pair ${fromTokenString} / ${toTokenString} not supported by any known DEX on ${network}`);

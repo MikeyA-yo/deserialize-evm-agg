@@ -10,8 +10,9 @@ export const networkSetup = (network: { id: string, rpc: string }) => {
     }
     if (network.id == "BASE") {
         config.rpc = network.rpc;
-        config.addresses.adapterTracker = "0xf0c3D4dE61d78742Eb51dffA29A109aCE473892F";
-        config.addresses.swapProxy = "0xADb0018bCF10b7dD84B7C3e2D92889185DA41f45";
+        // Redeployed Oct 2026: MultiRouteSwapV2 (ERC1967 proxy) + AdapterTracker with V3, V2, Aerodrome V2 and V4 adapters
+        config.addresses.adapterTracker = "0xbC9eB41b40be480541b54A4189bB82c4340378a7";
+        config.addresses.swapProxy = "0x2B7b17165aAe7Ce6cC390920282473720Db8b30b";
         return config
     }
     return config
