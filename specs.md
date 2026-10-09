@@ -251,7 +251,8 @@ Market data comes from **GeckoTerminal** (CoinGecko's on-chain API) and is **cac
 ```
 - Keys are **lowercased** addresses. `null` means GeckoTerminal has no data for that token. Any numeric field can be `null`.
 - `priceChange24h` is a percent (`-3.18` = −3.18%), taken from the token's most liquid pool.
-- If GeckoTerminal is down, the last cached values are served.
+- If GeckoTerminal is down or blocks the server, **DexScreener** is used as a fallback; if both fail, the last cached values are served.
+- Responses include `sources: { "geckoterminal": "ok" | "<error>", "dexscreener": "ok" | "<error>" }`. If prices show as blank, check it first.
 
 **`GET /:chain/tokens/trending`**: tokens from Base's trending pools (about 18–20), same fields plus `poolName` and `dex`, cached 5 minutes.
 

@@ -4,7 +4,7 @@ import { NextFunction, Request, Response } from "express";
 import { SwapQuoteRequestSchema, SwapRequestSchema, TokenDetailsRequestSchema, TokenPriceRequestSchema } from "./swap.schema";
 import { allTokensService, getTokenDetailsService, getTokenPriceService, swapQuoteService, swapService, tokenList, tokenListWithDetailsService, tokenSearchService } from "./swap.service";
 import { warmUpTokenDiscovery } from "../index";
-import { getTokenMarkets, getTrendingTokens, MARKET_TTL_MS, MAX_ADDRESSES_PER_REQUEST } from "./market";
+import { getTokenMarkets, getTrendingTokens, getUpstreamStatus, MARKET_TTL_MS, MAX_ADDRESSES_PER_REQUEST } from "./market";
 import { ApiError } from "../errors/errors.api";
 import { createJsonRpcProvider, getChainFromName, normalizeNetworkType, NetworkType } from "@deserialize-evm-agg/routes-providers";
 
@@ -247,7 +247,7 @@ export const tokenMarketController = async (
             throw new ApiError(400, `At most ${MAX_ADDRESSES_PER_REQUEST} addresses per request`);
         }
         const result = await getTokenMarkets(chainName, addresses);
-        res.send({ result, data: result, network: chainName, cacheSeconds: MARKET_TTL_MS / 1000 });
+        res.send({ result, data: result, network: chainName, cacheSeconds: MARKET_TTL_MS / 1000, sources: getUpstreamStatus() });
     } catch (error: any) {
         console.error("❌ [TOKEN_MARKET:ERROR]:", error?.message);
         next(error);
@@ -264,8 +264,17 @@ export const trendingTokensController = async (
             (typeof req.params.chain === "string" ? req.params.chain : undefined) ||
             (typeof req.query.chain === "string" ? req.query.chain : undefined)
         );
-        const result = await getTrendingTokens(chainName);
-        res.send({ result, data: result, total: result.length, network: chainName, cacheSeconds: MARKET_TTL_MS / 1000 });
+        const provider = providerForChain(chainName);
+        // If GeckoTerminal is unavailable, rank curated + routable tokens by 24h volume instead
+        const fallback = async () => {
+            const { tokens } = await allTokensService(provider, chainName);
+            return tokens
+                .filter((t) => (t.verified || t.indexed) && !t.address.toLowerCase().startsWith("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"))
+                .map((t) => t.address)
+                .slice(0, MAX_ADDRESSES_PER_REQUEST);
+        };
+        const result = await getTrendingTokens(chainName, fallback);
+        res.send({ result, data: result, total: result.length, network: chainName, cacheSeconds: MARKET_TTL_MS / 1000, sources: getUpstreamStatus() });
     } catch (error: any) {
         console.error("❌ [TOKEN_TRENDING:ERROR]:", error?.message);
         next(error);
