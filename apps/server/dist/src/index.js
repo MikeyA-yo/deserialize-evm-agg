@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getRoutePlanFromTokenStringPath = exports.getBestRoutes = exports.initAndGetCache = void 0;
+exports.getRoutePlanFromTokenStringPath = exports.getBestRoutes = exports.initAndGetCache = exports.warmUpTokenDiscovery = void 0;
 const cache_1 = require("@deserialize-evm-agg/cache");
 const graph_1 = require("@deserialize-evm-agg/graph");
 const routes_providers_1 = require("@deserialize-evm-agg/routes-providers");
@@ -16,6 +16,63 @@ BigInt.prototype.toJSON = function () {
     const int = Number.parseInt(this.toString());
     return int ?? this.toString();
 };
+// ---------- On-chain pool discovery coordination (per server process) ----------
+// Discovery read-modify-writes the shared per-DEX caches, so two running at once can drop each
+// other's pools. They are run one at a time, and a quote that needs a token already being
+// discovered waits for that discovery instead of starting the same ~20s scan again.
+let discoveryQueue = Promise.resolve();
+const discoveriesInFlight = new Map(); // lowercased token -> settled marker
+const runDiscoveryExclusive = (task) => {
+    const run = discoveryQueue.then(task, task);
+    discoveryQueue = run.catch(() => undefined);
+    return run;
+};
+const discoverTokenPairPools = (route, tokenA, tokenB) => {
+    const tokens = [tokenA.toLowerCase(), tokenB.toLowerCase()];
+    const run = runDiscoveryExclusive(() => route.findUpdateTokenPairPools(tokenA, tokenB));
+    const settled = run.then(() => undefined, () => undefined);
+    tokens.forEach((t) => discoveriesInFlight.set(t, settled));
+    void settled.then(() => tokens.forEach((t) => {
+        if (discoveriesInFlight.get(t) === settled)
+            discoveriesInFlight.delete(t);
+    }));
+    return run;
+};
+const waitForDiscoveries = async (tokens) => {
+    const pending = tokens.map((t) => discoveriesInFlight.get(t.toLowerCase())).filter(Boolean);
+    if (pending.length > 0) {
+        console.log(`      [ROUTER:AUTO_DISCOVERY] Waiting for ${pending.length} in-flight discovery(ies) for these tokens...`);
+        await Promise.all(pending);
+    }
+};
+/**
+ * Starts pool discovery for a token in the background if it is not indexed yet, so that the
+ * first quote for a freshly imported token does not have to wait for it. Called when the
+ * frontend loads a token's details (e.g. a pasted contract address). Never throws.
+ */
+const warmUpTokenDiscovery = (network, token, provider) => {
+    void (async () => {
+        try {
+            const RouteClass = (0, routes_providers_1.getChainAllRoute)(network);
+            const route = new RouteClass(provider, await (0, exports.initAndGetCache)());
+            const { wrappedNativeTokenAddress, nativeTokenAddress } = route.getDexConfig();
+            const lower = token.toLowerCase();
+            if (lower === nativeTokenAddress.toLowerCase() || discoveriesInFlight.has(lower))
+                return;
+            const { tokenBiMap } = await route.getTokenBiMap();
+            if (tokenBiMap.getByValue(lower) !== undefined)
+                return;
+            console.log(`      [WARMUP] Discovering pools for newly requested token ${token} on ${network}...`);
+            // Candidate pairs cover the token against WETH and the stable token
+            await discoverTokenPairPools(route, token, wrappedNativeTokenAddress);
+            console.log(`      [WARMUP] Pools for ${token} indexed`);
+        }
+        catch (error) {
+            console.warn(`      [WARMUP] Discovery for ${token} failed (non-fatal):`, error?.message);
+        }
+    })();
+};
+exports.warmUpTokenDiscovery = warmUpTokenDiscovery;
 // Max pools simulated per hop when checking candidate routes against the on-chain quoters
 const MAX_POOLS_PER_HOP = 6;
 /**
@@ -155,6 +212,8 @@ const getBestRoutes = async (network, fromTokenString, toTokenString, amount, _p
     catch (error) {
         console.warn(`      [ROUTER:PRICE_WARN] Token price lookup failed, continuing quote with keyRate 0:`, error?.message);
     }
+    // A discovery already running for either token (e.g. warm-up after import) is awaited first
+    await waitForDiscoveries([fromTokenString, toTokenString]);
     let { tokenBiMap } = await RouteJsonRpcProvider.getTokenBiMap();
     let graph = withoutDisabledDexes(await RouteJsonRpcProvider.getGraph());
     let path = [];
@@ -167,13 +226,13 @@ const getBestRoutes = async (network, fromTokenString, toTokenString, amount, _p
     };
     if (fromIndex === undefined || toIndex === undefined) {
         console.log(`      [ROUTER:AUTO_DISCOVERY] Token not found in tokenBiMap. Querying DEX factories on-chain to discover pools for ${fromTokenString} / ${toTokenString}...`);
-        const updated = await RouteJsonRpcProvider.findUpdateTokenPairPools(fromTokenString, toTokenString);
+        const updated = await discoverTokenPairPools(RouteJsonRpcProvider, fromTokenString, toTokenString);
         tokenBiMap = updated.newTokenBiMap;
         graph = withoutDisabledDexes(updated.newGraph);
         syncIndexes();
         if (fromIndex === undefined || toIndex === undefined) {
             console.error(`      [ROUTER:ERROR] Token pair still not found after on-chain discovery!`);
-            throw new Error(`Token pair ${fromTokenString} / ${toTokenString} not supported by any known DEX on ${network}`);
+            throw new errors_api_1.ApiError(400, `No liquidity found for ${fromTokenString} / ${toTokenString} on any supported ${network} DEX (directly or via WETH/USDC)`);
         }
         console.log(`      [ROUTER:AUTO_DISCOVERY_SUCCESS] Pools discovered & indexed. New indexes: from=${fromIndex}, to=${toIndex}`);
     }
@@ -182,12 +241,12 @@ const getBestRoutes = async (network, fromTokenString, toTokenString, amount, _p
     console.log(`      [ROUTER:EDGES] Existing edges: fromToken=${fromEdges.length}, toToken=${toEdges.length}`);
     if (fromEdges.length === 0 || toEdges.length === 0) {
         console.log(`      [ROUTER:AUTO_DISCOVERY] Zero edges found. Re-indexing on-chain pools...`);
-        const updated = await RouteJsonRpcProvider.findUpdateTokenPairPools(fromTokenString, toTokenString);
+        const updated = await discoverTokenPairPools(RouteJsonRpcProvider, fromTokenString, toTokenString);
         tokenBiMap = updated.newTokenBiMap;
         graph = withoutDisabledDexes(updated.newGraph);
         syncIndexes();
         if (fromIndex === undefined || toIndex === undefined) {
-            throw new Error(`Token pair ${fromTokenString} / ${toTokenString} not supported by any known DEX on ${network}`);
+            throw new errors_api_1.ApiError(400, `No liquidity found for ${fromTokenString} / ${toTokenString} on any supported ${network} DEX (directly or via WETH/USDC)`);
         }
         fromEdges = graph[fromIndex] ?? [];
         toEdges = graph[toIndex] ?? [];

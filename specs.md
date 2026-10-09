@@ -179,6 +179,86 @@ GET http://localhost:3735/base/tokens/search?q=miggles
 
 ---
 
+### 3.3.1 Get All Tokens
+
+Returns every known token on the chain, for token pickers and token pages. On Base it merges:
+- the **CoinGecko Base token list** (about 2,800 tokens, with logos; cached 6 h on the server)
+- the curated default tokens
+- tokens already in the routing graph
+- tokens found earlier through search
+
+- **Method:** `GET`
+- **Paths:** `/:chain/tokens` (e.g. `GET /base/tokens`), or `/tokens` (defaults to Base)
+- **Query params (all optional):**
+
+| Param | Description |
+| :--- | :--- |
+| `q` (or `query`) | Filter by symbol, name, or address prefix. Exact symbol matches rank first, then symbol prefix, then substring, then name. |
+| `limit` | Page size. Omit to get every token (~2,850 entries, about 0.5 s once cached; the first call after a server start takes ~3–4 s). |
+| `offset` | Page start, default `0`. |
+
+#### Response (`200 OK`):
+```json
+{
+  "result": [
+    {
+      "address": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+      "symbol": "AERO",
+      "name": "Aerodrome",
+      "decimals": 18,
+      "logoURI": "https://assets.coingecko.com/coins/images/…",
+      "indexed": true,
+      "verified": true,
+      "network": "BASE"
+    }
+  ],
+  "data": [ /* same as result */ ],
+  "total": 2849,
+  "offset": 0,
+  "limit": null,
+  "network": "BASE"
+}
+```
+
+| Field | Meaning |
+| :--- | :--- |
+| `indexed` | The token is already in the routing graph, so quotes return in ~1–3 s. For other tokens the **first** quote discovers pools on-chain, which takes ~20 s or more (§3.4.2). |
+| `verified` | In the curated default list. Treat everything else like an imported token: show a "check the contract address" warning, as the import flow already does. |
+| `logoURI` | Optional. Missing for tokens that are only in the routing graph or found via search. |
+
+Order: relevance to `q` (when given), then `verified`, then `indexed`, then symbol A–Z. `address` is checksummed. `total` is the count after filtering by `q`, before pagination. The merged list is cached on the server for 5 minutes, and the CoinGecko list underneath it for 6 hours.
+
+### 3.3.2 Token Market Data & Trending (Explore page)
+
+Market data comes from **GeckoTerminal** (CoinGecko's on-chain API) and is **cached on the aggregator for 5 minutes** per token. Every visitor shares those upstream calls, so call these freely; refetching sooner than 5 minutes returns the same data.
+
+**`GET /:chain/tokens/market?addresses=0xabc,0xdef,…`** (max **100** addresses; use WETH's address for native ETH)
+```json
+{
+  "result": {
+    "0x940181a94a35a4569e4529a3cdfb74e38fd98631": {
+      "address": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+      "symbol": "AERO", "name": "Aerodrome Finance", "decimals": 18,
+      "logoURI": "https://assets.coingecko.com/…",
+      "priceUsd": 0.7968, "priceChange24h": -3.18,
+      "volume24hUsd": 23516650, "marketCapUsd": 796253553, "fdvUsd": 1203000000, "liquidityUsd": 41200000,
+      "updatedAt": 1791580000000
+    },
+    "0x0000000000000000000000000000000000000001": null
+  },
+  "cacheSeconds": 300
+}
+```
+- Keys are **lowercased** addresses. `null` means GeckoTerminal has no data for that token. Any numeric field can be `null`.
+- `priceChange24h` is a percent (`-3.18` = −3.18%), taken from the token's most liquid pool.
+- If GeckoTerminal is down, the last cached values are served.
+
+**`GET /:chain/tokens/trending`**: tokens from Base's trending pools (about 18–20), same fields plus `poolName` and `dex`, cached 5 minutes.
+
+**Explore page pattern (implemented in `deserialise-frontend`):** load `GET /base/tokens` once, filter it client-side, render 50 rows at a time, and request `/tokens/market` once per 50 visible rows (React Query `staleTime: 5 min`). A "Trending" tab reads `/tokens/trending`.
+
+---
+
 ### 3.4 Get Swap Quote
 
 Calculates best execution route and expected output amount across all registered Base DEXes.
@@ -336,6 +416,15 @@ function feePercent(hop: QuoteRouteHop): string | null {
 
 **`dexName` values on Base:** `Uniswap V3`, `PancakeSwap V3`, `Aerodrome V3`, `Uniswap V2`, `PancakeSwap V2`, `Aerodrome V2`, `Uniswap V4`. Map `dexId` to a logo on the frontend; the API returns no logo URLs.
 
+#### 3.4.2 First quote for a new token (pasted address or non-indexed token)
+
+The routing graph only holds tokens whose pools have been discovered. For any other token (`indexed: false` in §3.3.1, or a pasted contract address), the first quote discovers its pools on-chain across all 7 DEXes. That takes **~20 s or more** (two new tokens take longer than one). Later quotes for that token take ~1–3 s.
+
+- **Start discovery early.** `GET /:chain/tokenDetails/:address` starts discovery for a non-indexed token in the background, and a quote arriving meanwhile waits for it instead of starting over. The import flow already calls it when the user pastes an address, so in practice the pools are often ready by the time the user enters an amount.
+- **Timeout:** allow **at least 60 s** for `POST /quote` (the frontend now uses 60 s). A 20 s timeout is the root cause of "manually entered token pairs don't work": the request was abandoned while the backend was still discovering pools.
+- **Loading state:** while a quote for a non-indexed token is pending, show something like "Finding liquidity for a new token… this can take up to a minute the first time".
+- **No liquidity:** if neither token has a pool on any supported Base DEX (directly or via WETH/USDC), the quote returns **HTTP 400** with `message: "No liquidity found for <tokenA> / <tokenB> on any supported BASE DEX (directly or via WETH/USDC)"`. Previously this was a 500. Show it as "No route for this pair".
+
 ---
 
 ### 3.5 Build Swap Transaction
@@ -414,6 +503,12 @@ const searchRes = await fetch(`http://localhost:3735/base/tokens/search?q=${enco
 const { result: tokens } = await searchRes.json();
 // tokens = [{ address: "0x940181...", symbol: "AERO", name: "Aerodrome", decimals: 18, network: "BASE" }]
 ```
+
+To show a full token list instead (with logos and `indexed` / `verified` flags), load `GET /base/tokens` once and filter it on the client, or pass `?q=` (§3.3.1):
+```typescript
+const { result: allTokens, total } = await (await fetch("http://localhost:3735/base/tokens")).json();
+```
+When the user pastes an address that isn't in the list, call `GET /base/tokenDetails/:address` straight away. It returns the metadata and starts pool discovery, so the first quote is faster (§3.4.2).
 
 ### Step 1: Request Quote
 ```typescript

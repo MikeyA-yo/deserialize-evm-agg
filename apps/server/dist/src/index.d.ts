@@ -6,6 +6,12 @@ import Decimal from "decimal.js";
 export interface RouteOptions {
     targetRouteNumber: number;
 }
+/**
+ * Starts pool discovery for a token in the background if it is not indexed yet, so that the
+ * first quote for a freshly imported token does not have to wait for it. Called when the
+ * frontend loads a token's details (e.g. a pasted contract address). Never throws.
+ */
+export declare const warmUpTokenDiscovery: (network: NetworkType, token: string, provider: JsonRpcProvider) => void;
 export interface SimulatedRoute {
     routes: DeserializeRoutePlan<AllDexIdTypes>[];
     amountOut: Decimal;

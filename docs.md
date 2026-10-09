@@ -403,3 +403,42 @@ End to end after the fix (quote → `/swap` → `eth_call`), all executing:
 | 0.05 ETH → AERO | 158.04 AERO | PancakeSwap V3 | 2.2 s |
 
 ERC-20-input dry runs give the test address a WETH balance and allowance by overriding WETH9 storage (`balanceOf` slot 3, `allowance` slot 4).
+
+---
+
+## 13. Changelog: Token List Endpoint & First-Quote Discovery (Oct 9, 2026)
+
+### 13.1 `GET /:chain/tokens` (and `/tokens`)
+Full token list for pickers: the CoinGecko Base token list (`https://tokens.coingecko.com/base/all.json`, about 2,850 tokens, cached in memory 6 h, stale copy served if a refresh fails), plus the curated default tokens, routing-graph tokens and search-discovered tokens. Each token carries `indexed` (in the routing graph) and `verified` (curated). Query params: `q` (relevance-ranked), `limit`, `offset`. Implemented in `allTokensService` (`swap.service.ts`) and `allTokensController`. Swagger and specs.md §3.3.1 document it. Measured: ~3.5 s on the first call after a server start, ~0.5 s afterwards.
+
+### 13.2 "Manually entered token pairs don't work"
+Reproduced with VIRTUAL → SKI and MIGGLES → SEAM, two tokens not in the routing graph (it held 11 tokens). The first quote has to discover pools on-chain for 5 candidate pairs across 7 DEXes, which took **21–29 s**. The frontend aborted quotes after **20 s** ("The aggregator took too long to answer"). The backend finished moments later, which is why the same pair worked on a later try.
+
+Fixes:
+
+| # | Change | Files |
+| :--- | :--- | :--- |
+| 1 | **Discovery is serialized per server process** (`runDiscoveryExclusive`). Each discovery read-modify-writes the shared per-DEX caches, and two at once could drop each other's pools. | `apps/server/src/index.ts` |
+| 2 | **A quote waits for in-flight discoveries** of its tokens (`waitForDiscoveries`) and then re-reads the graph, instead of running the same scan again. | `apps/server/src/index.ts` |
+| 3 | **Warm-up on lookup:** `GET /tokenDetails/:address` starts background discovery for a non-indexed token (`warmUpTokenDiscovery`), so pools are usually ready by the time the user enters an amount. | `apps/server/src/index.ts`, `swap.controllers.ts` |
+| 4 | "Pair not supported" is now **HTTP 400** ("No liquidity found for … on any supported BASE DEX (directly or via WETH/USDC)") instead of a 500. | `apps/server/src/index.ts` |
+| 5 | **Frontend** (`deserialise-frontend`): quote timeout 20 s → 60 s, with a message explaining the first quote for a new token can take up to a minute. | `src/lib/api.ts` |
+
+Verified with the warm-up: MIGGLES and SEAM were looked up via `/tokenDetails`, then quoted 3 s later. The quote waited for both warm-ups (no duplicate scan) and routed MIGGLES → WETH (Uniswap V2) → USDC (PancakeSwap V3) → SEAM (Uniswap V3) in 23 s total on the public RPC. A warm repeat of VIRTUAL → SKI took 3 s.
+
+### 13.3 Notes
+* **Two new tokens still take ~20 s+** if quoted immediately: their warm-ups run one after another. Possible next step: discover all candidate pairs of a route in parallel and write each DEX's cache once (needs a batch variant of each route's `findUpdateTokenPairPools`).
+* **Local testing gotcha (Oct 9):** this machine's DNS could not resolve `base-mainnet.g.alchemy.com` (`getaddrinfo EAI_AGAIN`), so every RPC call failed and discovery returned no pools ("not supported"). Tests used `BASE_RPC_URL=https://mainnet.base.org`. If discovery suddenly finds nothing, check RPC reachability first. Later the same day the same DNS problem hit `tokens.coingecko.com`, so local `/tokens` fell back to the 18 curated and routable tokens; production loads the full list.
+
+### 13.4 Explore page: market data and trending (Oct 9, 2026)
+The explore page listed only 21 hardcoded tokens and fetched each price separately. It now uses the full token list plus batched market data.
+
+| # | Change | Files |
+| :--- | :--- | :--- |
+| 1 | `GET /:chain/tokens/market?addresses=…` (≤ 100): price, 24h change (from the token's top pool), 24h volume, market cap, FDV, liquidity and logo from GeckoTerminal `tokens/multi` (30 per upstream call). | `apps/server/src/swap/market.ts`, `swap.controllers.ts`, `swap.routes.ts` |
+| 2 | `GET /:chain/tokens/trending`: base tokens of GeckoTerminal's trending pools with market data. | same |
+| 3 | **Caching:** market data and trending are cached in memory for **5 minutes**, and only missing or expired tokens are fetched. Concurrent requests share one upstream call. Unknown tokens are cached as `null`. On an upstream failure the stale data is served (or `null`) and retried after 1 minute. All GeckoTerminal calls go through one queue spaced ≥ 2.1 s apart (free tier ≈ 30/min). | `market.ts` |
+| 4 | `/tokens`: the merged list is cached 5 minutes. A failed CoinGecko load backs off for 60 s instead of retrying on every request, and an incomplete list is not cached. | `swap.service.ts` |
+| 5 | **Frontend explore page:** All tokens / Trending tabs, full list with client-side ranked search, 50 rows per page with "Show more", one market request per page (React Query `staleTime` 5 min), logos, price, 24h change, market cap and volume. Pasted-address lookup is unchanged. `TokenMark` accepts an optional `logoURI` and falls back to the generated mark. | `deserialise-frontend`: `src/routes/explore.tsx`, `src/lib/api.ts`, `src/components/TokenMark.tsx`, `src/lib/format.ts` |
+
+Measured: a market request for 17 tokens took 1.5 s cold and 0.32 s cached; trending took 1.7 s cold and 0.13 s cached; no upstream errors. The cache is per server process and resets on restart.

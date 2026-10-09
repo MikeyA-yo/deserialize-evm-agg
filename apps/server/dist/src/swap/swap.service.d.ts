@@ -64,3 +64,23 @@ export interface SearchTokenResult {
     network?: string;
 }
 export declare const tokenSearchService: (searchQuery: string | undefined, provider: JsonRpcProvider, network: NetworkType) => Promise<SearchTokenResult[]>;
+export interface TokenListItem {
+    address: string;
+    symbol: string;
+    name: string;
+    decimals: number;
+    logoURI?: string;
+    /** Already in the routing graph: quotes are fast. Others are discovered on first quote. */
+    indexed: boolean;
+    /** In the curated default token list */
+    verified: boolean;
+    network: NetworkType;
+}
+export declare const allTokensService: (provider: JsonRpcProvider, network: NetworkType, options?: {
+    q?: string;
+    limit?: number;
+    offset?: number;
+}) => Promise<{
+    tokens: TokenListItem[];
+    total: number;
+}>;
