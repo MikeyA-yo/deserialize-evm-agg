@@ -323,3 +323,96 @@
  *       500:
  *         $ref: '#/components/responses/InternalServerError'
  */
+
+/**
+ * @swagger
+ * /{chain}/tokens:
+ *   get:
+ *     summary: Get every known token on a chain
+ *     description: |
+ *       Full token list for token pickers. On Base it merges the CoinGecko Base token list
+ *       (about 2,800 tokens, cached 6h), the curated default tokens, tokens already in the
+ *       routing graph, and tokens found through search. `indexed` tokens quote instantly; others are
+ *       discovered on their first quote (calling `/tokenDetails` for a token starts that early).
+ *       `/tokens` without a chain defaults to Base.
+ *     tags: [Token]
+ *     parameters:
+ *       - $ref: '#/components/parameters/ChainParam'
+ *       - in: query
+ *         name: q
+ *         schema: { type: string }
+ *         description: Filter by symbol, name or address prefix. Exact symbol matches rank first.
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, minimum: 1 }
+ *         description: Page size. Omit to return every token.
+ *       - in: query
+ *         name: offset
+ *         schema: { type: integer, minimum: 0, default: 0 }
+ *     responses:
+ *       200:
+ *         description: Tokens ordered by relevance (with q), then curated, then routable, then symbol
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 result:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       address: { type: string, example: '0x940181a94A35A4569E4529A3CDfB74e38FD98631' }
+ *                       symbol: { type: string, example: 'AERO' }
+ *                       name: { type: string, example: 'Aerodrome' }
+ *                       decimals: { type: integer, example: 18 }
+ *                       logoURI: { type: string }
+ *                       indexed: { type: boolean, description: 'Already in the routing graph' }
+ *                       verified: { type: boolean, description: 'In the curated default list' }
+ *                       network: { type: string, example: 'BASE' }
+ *                 data: { type: array, description: 'Same as result' }
+ *                 total: { type: integer, example: 2849 }
+ *                 offset: { type: integer, example: 0 }
+ *                 limit: { type: integer, nullable: true }
+ *                 network: { type: string, example: 'BASE' }
+ *       500:
+ *         $ref: '#/components/responses/InternalServerError'
+ */
+
+/**
+ * @swagger
+ * /{chain}/tokens/market:
+ *   get:
+ *     summary: Market data for a batch of tokens
+ *     description: |
+ *       Price, 24h change, 24h volume, market cap, FDV, liquidity and logo per token, from
+ *       GeckoTerminal. Cached on the server for 5 minutes per token; only missing or expired
+ *       tokens are fetched upstream (30 per call). Tokens GeckoTerminal does not know return null.
+ *     tags: [Token]
+ *     parameters:
+ *       - $ref: '#/components/parameters/ChainParam'
+ *       - in: query
+ *         name: addresses
+ *         required: true
+ *         schema: { type: string }
+ *         description: Comma-separated token addresses, at most 100. Use WETH for native ETH.
+ *     responses:
+ *       200:
+ *         description: "`result` maps each lowercased address to its market data or null"
+ *       400:
+ *         description: No addresses, or more than 100
+ */
+
+/**
+ * @swagger
+ * /{chain}/tokens/trending:
+ *   get:
+ *     summary: Trending tokens
+ *     description: Base tokens of GeckoTerminal's trending pools on the chain, with market data. Cached 5 minutes.
+ *     tags: [Token]
+ *     parameters:
+ *       - $ref: '#/components/parameters/ChainParam'
+ *     responses:
+ *       200:
+ *         description: "`result` is a list of tokens with market data, poolName and dex"
+ */

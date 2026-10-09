@@ -3,7 +3,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.tokenSearchService = exports.getTokenDetailsService = exports.getTokenPriceService = exports.tokenListWithDetailsService = exports.tokenList = exports.swapService = exports.swapQuoteService = void 0;
+exports.allTokensService = exports.tokenSearchService = exports.getTokenDetailsService = exports.getTokenPriceService = exports.tokenListWithDetailsService = exports.tokenList = exports.swapService = exports.swapQuoteService = void 0;
+const ethers_1 = require("ethers");
 const index_1 = require("../index");
 const decimal_js_1 = __importDefault(require("decimal.js"));
 const errors_api_1 = require("../errors/errors.api");
@@ -545,3 +546,148 @@ const tokenSearchService = async (searchQuery, provider, network) => {
     return scored.map((s) => s.token);
 };
 exports.tokenSearchService = tokenSearchService;
+// Public token lists (Uniswap token-list format) per network
+const EXTERNAL_TOKEN_LISTS = {
+    BASE: { url: "https://tokens.coingecko.com/base/all.json", chainId: 8453 },
+};
+const EXTERNAL_LIST_TTL_MS = 6 * 60 * 60 * 1000;
+const EXTERNAL_LIST_RETRY_MS = 60 * 1000; // after a failed fetch, wait before trying again
+const externalTokenListCache = new Map();
+const externalTokenListFailedAt = new Map();
+const checksumOrSelf = (address) => {
+    try {
+        return (0, ethers_1.getAddress)(address);
+    }
+    catch {
+        return address;
+    }
+};
+const fetchExternalTokenList = async (network) => {
+    const source = EXTERNAL_TOKEN_LISTS[network];
+    if (!source)
+        return [];
+    const cached = externalTokenListCache.get(network);
+    if (cached && Date.now() - cached.at < EXTERNAL_LIST_TTL_MS)
+        return cached.tokens;
+    const failedAt = externalTokenListFailedAt.get(network);
+    if (failedAt && Date.now() - failedAt < EXTERNAL_LIST_RETRY_MS)
+        return cached?.tokens ?? [];
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        const res = await fetch(source.url, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (!res.ok)
+            throw new Error(`HTTP ${res.status}`);
+        const body = await res.json();
+        const tokens = (Array.isArray(body?.tokens) ? body.tokens : []).filter((t) => t?.chainId === source.chainId &&
+            typeof t.address === "string" && /^0x[0-9a-fA-F]{40}$/.test(t.address) &&
+            typeof t.symbol === "string" && Number.isInteger(t.decimals));
+        externalTokenListCache.set(network, { tokens, at: Date.now() });
+        externalTokenListFailedAt.delete(network);
+        console.log(`  [TOKENS] Loaded ${tokens.length} tokens from ${source.url}`);
+        return tokens;
+    }
+    catch (error) {
+        console.warn(`  [TOKENS:WARN] Could not load external token list for ${network} (retrying in 60s):`, error?.message);
+        externalTokenListFailedAt.set(network, Date.now());
+        return cached?.tokens ?? []; // stale list beats no list
+    }
+};
+/**
+ * Every known token on the network: the public token list (CoinGecko for Base), the curated
+ * default tokens, tokens already in the routing graph, and tokens found through search.
+ * Optional `q` filters by symbol, name or address; `limit`/`offset` paginate.
+ */
+// Merged token list per network, rebuilt at most every 5 minutes (the CoinGecko list itself is cached 6h)
+const MERGED_LIST_TTL_MS = 5 * 60 * 1000;
+const mergedTokenListCache = new Map();
+const getMergedTokenList = async (provider, network) => {
+    const cached = mergedTokenListCache.get(network);
+    if (cached && Date.now() - cached.at < MERGED_LIST_TTL_MS)
+        return cached.tokens;
+    const tokenMap = new Map();
+    const known = network === "BASE" ? KNOWN_BASE_TOKENS : KNOWN_0G_TOKENS;
+    const knownSet = new Set(known.map((t) => t.address.toLowerCase()));
+    let indexed = new Set();
+    try {
+        const route = new ((0, routes_providers_1.getChainAllRoute)(network))(provider, await (0, index_1.initAndGetCache)());
+        indexed = new Set((await route.listTokens()).map((t) => t.toLowerCase()));
+        indexed.add(route.getDexConfig().nativeTokenAddress.toLowerCase()); // native routes via WETH
+    }
+    catch (error) {
+        console.warn("  [TOKENS:WARN] Could not read routing graph tokens:", error?.message);
+    }
+    const put = (t) => {
+        const key = t.address.toLowerCase();
+        const existing = tokenMap.get(key);
+        tokenMap.set(key, {
+            address: checksumOrSelf(t.address),
+            symbol: t.symbol,
+            name: t.name,
+            decimals: t.decimals,
+            logoURI: t.logoURI ?? existing?.logoURI,
+            indexed: indexed.has(key),
+            verified: knownSet.has(key),
+            network,
+        });
+    };
+    for (const t of await fetchExternalTokenList(network))
+        put(t);
+    for (const t of known)
+        put(t); // curated metadata wins; logo kept from the public list
+    if (network === "BASE") {
+        for (const t of DYNAMIC_BASE_TOKEN_CACHE.values())
+            if (!tokenMap.has(t.address.toLowerCase()))
+                put(t);
+    }
+    // Routing-graph tokens missing from every list (metadata from the mint cache / chain)
+    const missing = [...indexed].filter((address) => !tokenMap.has(address));
+    await Promise.all(missing.map(async (address) => {
+        try {
+            const d = await (0, exports.getTokenDetailsService)(address, provider, network);
+            if (d && typeof d.symbol === "string" && Number.isInteger(Number(d.decimals))) {
+                put({ address, symbol: d.symbol, name: d.name ?? d.symbol, decimals: Number(d.decimals) });
+            }
+        }
+        catch {
+            // unreadable token: leave it out
+        }
+    }));
+    const merged = [...tokenMap.values()];
+    // Only cache a complete list, so a failed CoinGecko load is retried instead of pinned for 5 minutes
+    if (!EXTERNAL_TOKEN_LISTS[network] || externalTokenListCache.has(network)) {
+        mergedTokenListCache.set(network, { tokens: merged, at: Date.now() });
+    }
+    return merged;
+};
+const allTokensService = async (provider, network, options = {}) => {
+    let tokens = [...(await getMergedTokenList(provider, network))];
+    const q = options.q?.trim().toLowerCase();
+    if (q) {
+        tokens = tokens.filter((t) => t.symbol.toLowerCase().includes(q) || t.name.toLowerCase().includes(q) || t.address.toLowerCase().startsWith(q));
+    }
+    // With a query: exact symbol, then symbol prefix, then symbol substring, then name/address.
+    // Then curated first, then routable, then alphabetical.
+    const relevance = (t) => {
+        if (!q)
+            return 0;
+        const symbol = t.symbol.toLowerCase();
+        if (symbol === q || t.address.toLowerCase() === q)
+            return 0;
+        if (symbol.startsWith(q))
+            return 1;
+        if (symbol.includes(q))
+            return 2;
+        return 3;
+    };
+    tokens.sort((a, b) => relevance(a) - relevance(b) ||
+        Number(b.verified) - Number(a.verified) ||
+        Number(b.indexed) - Number(a.indexed) ||
+        a.symbol.localeCompare(b.symbol));
+    const total = tokens.length;
+    const offset = Math.max(0, options.offset ?? 0);
+    const page = options.limit && options.limit > 0 ? tokens.slice(offset, offset + options.limit) : tokens.slice(offset);
+    return { tokens: page, total };
+};
+exports.allTokensService = allTokensService;

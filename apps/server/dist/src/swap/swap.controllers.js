@@ -1,9 +1,12 @@
 "use strict";
 //controller logics here
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.tokenSearchController = exports.tokenListWithDetailsController = exports.tokenDetailsController = exports.tokenPriceController = exports.tokenListController = exports.testnetSwapTransactionController = exports.swapTransactionController = exports.swapQuoteController = void 0;
+exports.tokenSearchController = exports.trendingTokensController = exports.tokenMarketController = exports.allTokensController = exports.tokenListWithDetailsController = exports.tokenDetailsController = exports.tokenPriceController = exports.tokenListController = exports.testnetSwapTransactionController = exports.swapTransactionController = exports.swapQuoteController = void 0;
 const swap_schema_1 = require("./swap.schema");
 const swap_service_1 = require("./swap.service");
+const index_1 = require("../index");
+const market_1 = require("./market");
+const errors_api_1 = require("../errors/errors.api");
 const routes_providers_1 = require("@deserialize-evm-agg/routes-providers");
 const chainFromRequest = (paramChain, bodyChain) => {
     return (0, routes_providers_1.normalizeNetworkType)(paramChain || bodyChain || "BASE");
@@ -132,6 +135,8 @@ const tokenDetailsController = async (req, res, next) => {
         const provider = providerForChain(chainName);
         const result = await (0, swap_service_1.getTokenDetailsService)(params.tokenAddress, provider, chainName);
         console.log(`  [TOKEN_DETAILS:SUCCESS] Token: ${result?.symbol} (${result?.name}, Decimals: ${result?.decimals})`);
+        // A token looked up by address is usually about to be quoted: index its pools now
+        (0, index_1.warmUpTokenDiscovery)(chainName, params.tokenAddress, provider);
         res.send({ result });
     }
     catch (error) {
@@ -156,6 +161,66 @@ const tokenListWithDetailsController = async (req, res, next) => {
     }
 };
 exports.tokenListWithDetailsController = tokenListWithDetailsController;
+const allTokensController = async (req, res, next) => {
+    try {
+        const chainName = chainFromRequest((typeof req.params.chain === "string" ? req.params.chain : undefined) ||
+            (typeof req.query.chain === "string" ? req.query.chain : undefined));
+        const toInt = (v) => {
+            const n = typeof v === "string" ? Number.parseInt(v, 10) : NaN;
+            return Number.isFinite(n) && n >= 0 ? n : undefined;
+        };
+        const q = typeof req.query.q === "string" ? req.query.q : typeof req.query.query === "string" ? req.query.query : undefined;
+        const limit = toInt(req.query.limit);
+        const offset = toInt(req.query.offset) ?? 0;
+        const provider = providerForChain(chainName);
+        const { tokens, total } = await (0, swap_service_1.allTokensService)(provider, chainName, { q, limit, offset });
+        console.log(`  [TOKENS:SUCCESS] ${tokens.length} of ${total} token(s) on ${chainName}${q ? ` matching "${q}"` : ""}`);
+        res.send({ result: tokens, data: tokens, total, offset, limit: limit ?? null, network: chainName });
+    }
+    catch (error) {
+        console.error("❌ [TOKENS:ERROR]:", error?.message);
+        next(error);
+    }
+};
+exports.allTokensController = allTokensController;
+const tokenMarketController = async (req, res, next) => {
+    try {
+        const chainName = chainFromRequest((typeof req.params.chain === "string" ? req.params.chain : undefined) ||
+            (typeof req.query.chain === "string" ? req.query.chain : undefined));
+        const raw = req.query.addresses ?? req.query.address;
+        const addresses = (Array.isArray(raw) ? raw : [raw])
+            .filter((v) => typeof v === "string")
+            .flatMap((v) => v.split(","))
+            .map((v) => v.trim())
+            .filter(Boolean);
+        if (addresses.length === 0) {
+            throw new errors_api_1.ApiError(400, "Pass token addresses as ?addresses=0xabc,0xdef");
+        }
+        if (addresses.length > market_1.MAX_ADDRESSES_PER_REQUEST) {
+            throw new errors_api_1.ApiError(400, `At most ${market_1.MAX_ADDRESSES_PER_REQUEST} addresses per request`);
+        }
+        const result = await (0, market_1.getTokenMarkets)(chainName, addresses);
+        res.send({ result, data: result, network: chainName, cacheSeconds: market_1.MARKET_TTL_MS / 1000 });
+    }
+    catch (error) {
+        console.error("❌ [TOKEN_MARKET:ERROR]:", error?.message);
+        next(error);
+    }
+};
+exports.tokenMarketController = tokenMarketController;
+const trendingTokensController = async (req, res, next) => {
+    try {
+        const chainName = chainFromRequest((typeof req.params.chain === "string" ? req.params.chain : undefined) ||
+            (typeof req.query.chain === "string" ? req.query.chain : undefined));
+        const result = await (0, market_1.getTrendingTokens)(chainName);
+        res.send({ result, data: result, total: result.length, network: chainName, cacheSeconds: market_1.MARKET_TTL_MS / 1000 });
+    }
+    catch (error) {
+        console.error("❌ [TOKEN_TRENDING:ERROR]:", error?.message);
+        next(error);
+    }
+};
+exports.trendingTokensController = trendingTokensController;
 const tokenSearchController = async (req, res, next) => {
     try {
         const chainName = chainFromRequest((typeof req.params.chain === "string" ? req.params.chain : undefined) ||
