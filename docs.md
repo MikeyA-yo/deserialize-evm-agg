@@ -449,3 +449,61 @@ Measured: a market request for 17 tokens took 1.5 s cold and 0.32 s cached; tren
 * **Request headers:** GeckoTerminal calls send a browser-like `User-Agent`.
 * **Diagnostics:** `/tokens/market` and `/tokens/trending` responses include `sources: { geckoterminal, dexscreener }` with each upstream's last result (`"ok"` or the error, e.g. `"GeckoTerminal HTTP 403"`). Check this first if prices go blank.
 * **Caching:** a token both sources answered without data is cached as `null` for 5 minutes; if a source failed it is retried after 1 minute.
+
+---
+
+## 14. On-Chain Token Index (Oct 12, 2026): No Third-Party Token or Market APIs
+
+Direction from the team: the backend must not list tokens or price them from DexScreener, CoinGecko or GeckoTerminal. Those lists contain tokens with no pools on our DEXes and miss new tokens that do have them. Tokens are now discovered from **our own DEXes' pools**, with metadata from the token contracts and prices from pool state.
+
+### 14.1 How tokens are discovered (`apps/server/src/tokens/registry.ts`)
+| Source | Method | RPC |
+| :--- | :--- | :--- |
+| PancakeSwap V2, Aerodrome V2, Aerodrome Slipstream, Uniswap V2 | Enumerate `allPairs(i)` / `allPools(i)`, read `token0`/`token1` (and `stable()` for Aerodrome V2) via **Multicall3** (`0xcA11…CA11`) in batches of 1,000, 4 batches in parallel | Main RPC (`BASE_RPC_URL`, Alchemy) |
+| Uniswap V3, PancakeSwap V3 (default) | Enumerate the **NonfungiblePositionManager** positions (`positions(id)` → token0, token1, fee) by id via Multicall3; deduplicate pools in a Redis set; resolve the pool with `factory.getPool`. Uniswap V3 NPM `0x03a5…34f1` (~4.78M live positions), PancakeSwap V3 NPM `0x46A1…4364` (~1.56M) | Main RPC |
+| Uniswap V3 (from block 1,371,680), PancakeSwap V3 (from block 2,912,007), optional | `PoolCreated` logs filtered to hub pairs, in `LOGS_MAX_RANGE` windows (halved on error). Only with `TOKEN_INDEX_V3_LOGS=on` and an RPC that allows wide `eth_getLogs` ranges (paid tier) | `LOGS_RPC_URL` |
+| Uniswap V4 | Not indexed: its adapter only executes admin-registered pools | — |
+
+**Why no logs by default:** free RPCs cannot serve log history at any useful width. Measured on Oct 12: Alchemy free allows `eth_getLogs` over **10 blocks**; dRPC free advertises 10,000 but rejected even 500-block windows (only ~100 worked); mainnet.base.org was rate-limited; publicnode needs a token for history; 1rpc caps at 50 blocks; Blast and meowrpc refused. Scanning 51M blocks that way is infeasible, so V3 pools are found through the position managers, which only need `eth_call`. Sizes: Uniswap V2 **3,068,939 pairs**; PancakeSwap V2 32k; Aerodrome V2 30k; Slipstream 3.6k; V3 position ids ~5M (Uniswap) and ~1.6M+ (PancakeSwap).
+
+**Backfill time (one-time, resumable):** about 130–400 items/s per track on Alchemy free (1,000 per multicall, 4 batches in flight). The V2-style factories and the V3 position managers run as two parallel tracks, so a fresh deployment takes **about 9 hours** to cover everything. That is set by the V3 track: ~8.4M position ids at ~270/s measured. Uniswap V2 takes 2–6 hours on the other track. The smaller DEXes and the newest pools are covered within minutes, and the list grows as it goes.
+
+**Listing rule:** a token is listed if at least one of its pools pairs it with a **hub** (WETH or USDC) and the hub side holds ≥ `TOKEN_INDEX_MIN_LIQUIDITY_USD / 2` (default $1,000 total, i.e. $500 hub side). Both sides of a WETH/USDC pool are listed. Hub USD prices are on-chain: USDC = $1, WETH from the Uniswap V3 WETH/USDC 0.05% pool's `slot0`.
+
+**Metadata:** `name()`, `symbol()` (with a fallback for old `bytes32` tokens), `decimals()`, `totalSupply()` via Multicall3. Contracts without a symbol or with decimals > 36 are skipped.
+
+**Storage (Redis):**
+* `tokenreg:BASE:tokens`: hash of address → `{ symbol, name, decimals, totalSupply, pools[≤5 deepest], liquidityUsd, firstSeen, updatedAt }`.
+* `tokenreg:BASE:cursor:<dexId>`: next pool index (or next block for log sources); `…:<dexId>:npm` holds the next position id.
+* `tokenreg:BASE:seenpools:<dexId>`: V3 pools already evaluated from positions.
+* `tokenreg:BASE:pending`: recently created pools below the threshold, re-checked every cycle for 24 h. Liquidity is often added after a pool is created. Only pools near the chain head are tracked (last 5,000 pools / 20,000 position ids / ~43,200 blocks); historical below-threshold pools are skipped as dead.
+* `tokenreg:BASE:lock`: Redis lock (15 min, renewed while working) so only one process indexes at a time.
+* `tokenreg:BASE:status`: progress per source and last cycle time.
+
+**Lifecycle:** the server starts the indexer after it begins listening (`startTokenIndexer`). The first cycle starts after 10 s, then one runs every 5 minutes. The first run is a **backfill** that resumes from its checkpoints after restarts; later cycles only process new pools. Settings:
+
+| Env var | Default | Meaning |
+| :--- | :--- | :--- |
+| `TOKEN_INDEXER` | on | `off` disables the indexer in this process |
+| `TOKEN_INDEX_SKIP` | — | Comma-separated dexIds to skip, e.g. `UNISWAP_V2_BASE` |
+| `TOKEN_INDEX_MIN_LIQUIDITY_USD` | 1000 | Minimum pool liquidity for listing |
+| `TOKEN_INDEX_V3_LOGS` | off | `on` = discover V3 pools from `PoolCreated` logs instead of position managers (needs a wide-range logs RPC) |
+| `LOGS_RPC_URL` | `https://base.drpc.org` | RPC used only for `eth_getLogs` (with `TOKEN_INDEX_V3_LOGS=on`) |
+| `LOGS_MAX_RANGE` | 9999 | Blocks per log window |
+
+### 14.2 What changed in the API
+* `GET /:chain/tokens` lists the **registry tokens** plus curated tokens and routing-graph tokens. A new field `liquidityUsd` holds the on-chain liquidity at index time. Order: query relevance, curated, then **deepest liquidity**, routable, symbol. `logoURI` is no longer provided.
+* `GET /:chain/tokens/market` is computed **on-chain** per token from its deepest hub pool:
+  * **price:** V2 / Aerodrome volatile from the reserve ratio; Aerodrome stable via `getAmountOut`; V3 / Slipstream from `slot0`.
+  * **market cap:** total supply × price.
+  * **liquidity:** 2 × hub side, summed over the token's pools.
+  * Cached 5 minutes. `priceChange24h`, `volume24hUsd`, `fdvUsd` and `logoURI` are `null` (not available on-chain without history or swap-event indexing). `sources` is now `{ onchain: "ok" | error }`.
+* `GET /:chain/tokens/trending` now returns the **top 20 tokens by on-chain liquidity** (the path is unchanged for compatibility; the frontend labels it "Top").
+* Token search (`/tokens/search`) matches against the registry instead of calling DexScreener.
+
+### 14.3 Disabled (commented out, kept for reference)
+* CoinGecko Base token list (`fetchExternalTokenList` and constants in `swap.service.ts`).
+* GeckoTerminal + DexScreener market data (bottom of `market.ts`, every line prefixed with `//`).
+* DexScreener ticker search (`searchExternalBaseTokens`, `DYNAMIC_BASE_TOKEN_CACHE`, and step 4 of `tokenSearchService`).
+
+Still external, and not part of this change: `providers/routeProviders/price.ts` (DefiLlama and others) supplies USD prices used by the **router's** edge costs and `/tokenPrice`.

@@ -3,6 +3,8 @@
 import { setupApp } from "./app";
 import routers from "./routers";
 import { env } from "./config";
+import { startTokenIndexer } from "./tokens/registry";
+import { BaseChain } from "@deserialize-evm-agg/routes-providers";
 
 
 
@@ -25,6 +27,8 @@ import { env } from "./config";
     const server = app.listen(PORT, () => {
         console.log(`Server is running on http://localhost:${PORT}`);
         console.log(`Rate limiting enabled: 200 requests per second per IP`);
+        // Background on-chain token registry (Base). TOKEN_INDEXER=off disables it.
+        startTokenIndexer(BaseChain.rpcUrl);
     });
 
     // getNativePrice();
