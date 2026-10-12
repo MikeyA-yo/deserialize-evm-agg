@@ -11,6 +11,7 @@ const errors_api_1 = require("../errors/errors.api");
 const constants_1 = require("../constants");
 const utils_1 = require("../utils");
 const routes_providers_1 = require("@deserialize-evm-agg/routes-providers");
+const registry_1 = require("../tokens/registry");
 const swapQuoteService = async (params, provider, network) => {
     try {
         console.log(`    [QUOTE_SVC:1/5] Initiating route search: Network=${network}, Pair=${params.tokenA} -> ${params.tokenB}, Amount=${params.amountIn}`);
@@ -366,75 +367,84 @@ const KNOWN_0G_TOKENS = [
         network: "0G",
     },
 ];
-const DYNAMIC_BASE_TOKEN_CACHE = new Map();
-async function searchExternalBaseTokens(query, provider) {
-    const q = query.trim().toLowerCase();
-    if (!q || q.startsWith("0x"))
-        return [];
-    try {
-        const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query.trim())}`;
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3000);
-        const res = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeout);
-        if (!res.ok)
-            return [];
-        const data = await res.json();
-        const pairs = data?.pairs || [];
-        const basePairs = pairs.filter((p) => p?.chainId === "base");
-        const candidates = [];
-        const seenAddresses = new Set();
-        for (const pair of basePairs) {
-            for (const candidate of [pair?.baseToken, pair?.quoteToken]) {
-                const addr = candidate?.address?.toLowerCase();
-                if (!addr || addr === "0x0000000000000000000000000000000000000000" || seenAddresses.has(addr))
-                    continue;
-                const sym = (candidate?.symbol || "").toLowerCase();
-                const name = (candidate?.name || "").toLowerCase();
-                if (sym.includes(q) || name.includes(q)) {
-                    seenAddresses.add(addr);
-                    candidates.push(candidate);
-                    if (candidates.length >= 6)
-                        break;
-                }
-            }
-            if (candidates.length >= 6)
-                break;
-        }
-        const resolveCandidate = async (candidate) => {
-            const addr = candidate.address.toLowerCase();
-            if (DYNAMIC_BASE_TOKEN_CACHE.has(addr)) {
-                return DYNAMIC_BASE_TOKEN_CACHE.get(addr);
-            }
-            let decimals = 18;
-            try {
-                const onchainPromise = (0, routes_providers_1.getTokenDetails)(candidate.address, provider);
-                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("RPC timeout")), 1500));
-                const onchain = await Promise.race([onchainPromise, timeoutPromise]);
-                if (onchain && typeof onchain.decimals === "number") {
-                    decimals = onchain.decimals;
-                }
-            }
-            catch {
-                // fallback to 18
-            }
-            const tokenItem = {
-                address: candidate.address,
-                symbol: candidate.symbol,
-                name: candidate.name,
-                decimals,
-                network: "BASE",
-            };
-            DYNAMIC_BASE_TOKEN_CACHE.set(addr, tokenItem);
-            return tokenItem;
-        };
-        return await Promise.all(candidates.map(resolveCandidate));
-    }
-    catch (err) {
-        console.warn("  [TOKEN_SEARCH:WARN] Dynamic token discovery error:", err?.message);
-        return [];
-    }
-}
+// LEGACY (disabled Oct 2026): DexScreener ticker search. Replaced by the on-chain token registry.
+// const DYNAMIC_BASE_TOKEN_CACHE = new Map<string, SearchTokenResult>();
+// async function searchExternalBaseTokens(query: string, provider: JsonRpcProvider): Promise<SearchTokenResult[]> {
+//     const q = query.trim().toLowerCase();
+//     if (!q || q.startsWith("0x")) return [];
+//
+//     try {
+//         const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query.trim())}`;
+//         const controller = new AbortController();
+//         const timeout = setTimeout(() => controller.abort(), 3000);
+//
+//         const res = await fetch(url, { signal: controller.signal });
+//         clearTimeout(timeout);
+//
+//         if (!res.ok) return [];
+//
+//         const data: any = await res.json();
+//         const pairs: any[] = data?.pairs || [];
+//         const basePairs = pairs.filter((p) => p?.chainId === "base");
+//
+//         const candidates: any[] = [];
+//         const seenAddresses = new Set<string>();
+//
+//         for (const pair of basePairs) {
+//             for (const candidate of [pair?.baseToken, pair?.quoteToken]) {
+//                 const addr = candidate?.address?.toLowerCase();
+//                 if (!addr || addr === "0x0000000000000000000000000000000000000000" || seenAddresses.has(addr)) continue;
+//
+//                 const sym = (candidate?.symbol || "").toLowerCase();
+//                 const name = (candidate?.name || "").toLowerCase();
+//
+//                 if (sym.includes(q) || name.includes(q)) {
+//                     seenAddresses.add(addr);
+//                     candidates.push(candidate);
+//                     if (candidates.length >= 6) break;
+//                 }
+//             }
+//             if (candidates.length >= 6) break;
+//         }
+//
+//         const resolveCandidate = async (candidate: any): Promise<SearchTokenResult> => {
+//             const addr = candidate.address.toLowerCase();
+//             if (DYNAMIC_BASE_TOKEN_CACHE.has(addr)) {
+//                 return DYNAMIC_BASE_TOKEN_CACHE.get(addr)!;
+//             }
+//
+//             let decimals = 18;
+//             try {
+//                 const onchainPromise = getTokenDetails(candidate.address, provider);
+//                 const timeoutPromise = new Promise((_, reject) =>
+//                     setTimeout(() => reject(new Error("RPC timeout")), 1500)
+//                 );
+//                 const onchain: any = await Promise.race([onchainPromise, timeoutPromise]);
+//                 if (onchain && typeof onchain.decimals === "number") {
+//                     decimals = onchain.decimals;
+//                 }
+//             } catch {
+//                 // fallback to 18
+//             }
+//
+//             const tokenItem: SearchTokenResult = {
+//                 address: candidate.address,
+//                 symbol: candidate.symbol,
+//                 name: candidate.name,
+//                 decimals,
+//                 network: "BASE",
+//             };
+//
+//             DYNAMIC_BASE_TOKEN_CACHE.set(addr, tokenItem);
+//             return tokenItem;
+//         };
+//
+//         return await Promise.all(candidates.map(resolveCandidate));
+//     } catch (err: any) {
+//         console.warn("  [TOKEN_SEARCH:WARN] Dynamic token discovery error:", err?.message);
+//         return [];
+//     }
+// }
 const tokenSearchService = async (searchQuery, provider, network) => {
     const q = searchQuery ? searchQuery.trim().toLowerCase() : "";
     const tokenMap = new Map();
@@ -483,26 +493,44 @@ const tokenSearchService = async (searchQuery, provider, network) => {
             console.warn(`  [TOKEN_SEARCH:WARN] Could not resolve CA ${searchQuery} on-chain:`, err?.message);
         }
     }
-    // 4. Dynamic discovery for non-default tickers/symbols on Base
+    // LEGACY (disabled Oct 2026): DexScreener ticker discovery. Replaced by the on-chain token registry below.
+    //     // 4. Dynamic discovery for non-default tickers/symbols on Base
+    //     if (network === "BASE" && q && !q.startsWith("0x")) {
+    //         for (const cached of DYNAMIC_BASE_TOKEN_CACHE.values()) {
+    //             if (!tokenMap.has(cached.address.toLowerCase())) {
+    //                 tokenMap.set(cached.address.toLowerCase(), cached);
+    //             }
+    //         }
+    //
+    //         const hasExactLocalMatch = Array.from(tokenMap.values()).some(
+    //             (t) => (t.symbol || "").toLowerCase() === q
+    //         );
+    //
+    //         if (!hasExactLocalMatch) {
+    //             try {
+    //                 const externalTokens = await searchExternalBaseTokens(searchQuery!, provider);
+    //                 for (const t of externalTokens) {
+    //                     if (!tokenMap.has(t.address.toLowerCase())) {
+    //                         tokenMap.set(t.address.toLowerCase(), t);
+    //                     }
+    //                 }
+    //             } catch (err: any) {
+    //                 console.warn("  [TOKEN_SEARCH:WARN] External ticker discovery failed:", err?.message);
+    //             }
+    //         }
+    //     }
+    //
+    // 4. On-chain token registry (tokens with WETH/USDC liquidity on our DEXes)
     if (network === "BASE" && q && !q.startsWith("0x")) {
-        for (const cached of DYNAMIC_BASE_TOKEN_CACHE.values()) {
-            if (!tokenMap.has(cached.address.toLowerCase())) {
-                tokenMap.set(cached.address.toLowerCase(), cached);
-            }
-        }
-        const hasExactLocalMatch = Array.from(tokenMap.values()).some((t) => (t.symbol || "").toLowerCase() === q);
-        if (!hasExactLocalMatch) {
-            try {
-                const externalTokens = await searchExternalBaseTokens(searchQuery, provider);
-                for (const t of externalTokens) {
-                    if (!tokenMap.has(t.address.toLowerCase())) {
-                        tokenMap.set(t.address.toLowerCase(), t);
-                    }
+        try {
+            for (const t of await (0, registry_1.getRegistryTokens)()) {
+                if (!tokenMap.has(t.address)) {
+                    tokenMap.set(t.address, { address: (0, ethers_1.getAddress)(t.address), symbol: t.symbol, name: t.name, decimals: t.decimals, network });
                 }
             }
-            catch (err) {
-                console.warn("  [TOKEN_SEARCH:WARN] External ticker discovery failed:", err?.message);
-            }
+        }
+        catch (err) {
+            console.warn("  [TOKEN_SEARCH:WARN] Token registry unavailable:", err?.message);
         }
     }
     const allTokens = Array.from(tokenMap.values());
@@ -546,14 +574,24 @@ const tokenSearchService = async (searchQuery, provider, network) => {
     return scored.map((s) => s.token);
 };
 exports.tokenSearchService = tokenSearchService;
-// Public token lists (Uniswap token-list format) per network
-const EXTERNAL_TOKEN_LISTS = {
-    BASE: { url: "https://tokens.coingecko.com/base/all.json", chainId: 8453 },
-};
-const EXTERNAL_LIST_TTL_MS = 6 * 60 * 60 * 1000;
-const EXTERNAL_LIST_RETRY_MS = 60 * 1000; // after a failed fetch, wait before trying again
-const externalTokenListCache = new Map();
-const externalTokenListFailedAt = new Map();
+// LEGACY (disabled Oct 2026): CoinGecko Base token list. Replaced by the on-chain token registry.
+// interface ExternalToken {
+//     chainId: number;
+//     address: string;
+//     symbol: string;
+//     name: string;
+//     decimals: number;
+//     logoURI?: string;
+// }
+//
+// // Public token lists (Uniswap token-list format) per network
+// const EXTERNAL_TOKEN_LISTS: Partial<Record<NetworkType, { url: string; chainId: number }>> = {
+//     BASE: { url: "https://tokens.coingecko.com/base/all.json", chainId: 8453 },
+// };
+// const EXTERNAL_LIST_TTL_MS = 6 * 60 * 60 * 1000;
+// const EXTERNAL_LIST_RETRY_MS = 60 * 1000; // after a failed fetch, wait before trying again
+// const externalTokenListCache = new Map<string, { tokens: ExternalToken[]; at: number }>();
+// const externalTokenListFailedAt = new Map<string, number>();
 const checksumOrSelf = (address) => {
     try {
         return (0, ethers_1.getAddress)(address);
@@ -562,38 +600,36 @@ const checksumOrSelf = (address) => {
         return address;
     }
 };
-const fetchExternalTokenList = async (network) => {
-    const source = EXTERNAL_TOKEN_LISTS[network];
-    if (!source)
-        return [];
-    const cached = externalTokenListCache.get(network);
-    if (cached && Date.now() - cached.at < EXTERNAL_LIST_TTL_MS)
-        return cached.tokens;
-    const failedAt = externalTokenListFailedAt.get(network);
-    if (failedAt && Date.now() - failedAt < EXTERNAL_LIST_RETRY_MS)
-        return cached?.tokens ?? [];
-    try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
-        const res = await fetch(source.url, { signal: controller.signal });
-        clearTimeout(timeout);
-        if (!res.ok)
-            throw new Error(`HTTP ${res.status}`);
-        const body = await res.json();
-        const tokens = (Array.isArray(body?.tokens) ? body.tokens : []).filter((t) => t?.chainId === source.chainId &&
-            typeof t.address === "string" && /^0x[0-9a-fA-F]{40}$/.test(t.address) &&
-            typeof t.symbol === "string" && Number.isInteger(t.decimals));
-        externalTokenListCache.set(network, { tokens, at: Date.now() });
-        externalTokenListFailedAt.delete(network);
-        console.log(`  [TOKENS] Loaded ${tokens.length} tokens from ${source.url}`);
-        return tokens;
-    }
-    catch (error) {
-        console.warn(`  [TOKENS:WARN] Could not load external token list for ${network} (retrying in 60s):`, error?.message);
-        externalTokenListFailedAt.set(network, Date.now());
-        return cached?.tokens ?? []; // stale list beats no list
-    }
-};
+// const fetchExternalTokenList = async (network: NetworkType): Promise<ExternalToken[]> => {
+//     const source = EXTERNAL_TOKEN_LISTS[network];
+//     if (!source) return [];
+//     const cached = externalTokenListCache.get(network);
+//     if (cached && Date.now() - cached.at < EXTERNAL_LIST_TTL_MS) return cached.tokens;
+//     const failedAt = externalTokenListFailedAt.get(network);
+//     if (failedAt && Date.now() - failedAt < EXTERNAL_LIST_RETRY_MS) return cached?.tokens ?? [];
+//
+//     try {
+//         const controller = new AbortController();
+//         const timeout = setTimeout(() => controller.abort(), 8_000);
+//         const res = await fetch(source.url, { signal: controller.signal });
+//         clearTimeout(timeout);
+//         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+//         const body: any = await res.json();
+//         const tokens: ExternalToken[] = (Array.isArray(body?.tokens) ? body.tokens : []).filter((t: any) =>
+//             t?.chainId === source.chainId &&
+//             typeof t.address === "string" && /^0x[0-9a-fA-F]{40}$/.test(t.address) &&
+//             typeof t.symbol === "string" && Number.isInteger(t.decimals)
+//         );
+//         externalTokenListCache.set(network, { tokens, at: Date.now() });
+//         externalTokenListFailedAt.delete(network);
+//         console.log(`  [TOKENS] Loaded ${tokens.length} tokens from ${source.url}`);
+//         return tokens;
+//     } catch (error: any) {
+//         console.warn(`  [TOKENS:WARN] Could not load external token list for ${network} (retrying in 60s):`, error?.message);
+//         externalTokenListFailedAt.set(network, Date.now());
+//         return cached?.tokens ?? []; // stale list beats no list
+//     }
+// };
 /**
  * Every known token on the network: the public token list (CoinGecko for Base), the curated
  * default tokens, tokens already in the routing graph, and tokens found through search.
@@ -627,20 +663,30 @@ const getMergedTokenList = async (provider, network) => {
             name: t.name,
             decimals: t.decimals,
             logoURI: t.logoURI ?? existing?.logoURI,
+            liquidityUsd: t.liquidityUsd ?? existing?.liquidityUsd ?? null,
             indexed: indexed.has(key),
             verified: knownSet.has(key),
             network,
         });
     };
-    for (const t of await fetchExternalTokenList(network))
-        put(t);
-    for (const t of known)
-        put(t); // curated metadata wins; logo kept from the public list
+    // On-chain token registry: tokens with a WETH/USDC pool above the liquidity threshold on our DEXes
     if (network === "BASE") {
-        for (const t of DYNAMIC_BASE_TOKEN_CACHE.values())
-            if (!tokenMap.has(t.address.toLowerCase()))
-                put(t);
+        try {
+            for (const t of await (0, registry_1.getRegistryTokens)()) {
+                put({ address: t.address, symbol: t.symbol, name: t.name, decimals: t.decimals, liquidityUsd: t.liquidityUsd });
+            }
+        }
+        catch (error) {
+            console.warn("  [TOKENS:WARN] Could not read the token registry:", error?.message);
+        }
     }
+    // LEGACY (disabled): CoinGecko token list and DexScreener-found tokens
+    // for (const t of await fetchExternalTokenList(network)) put(t);
+    for (const t of known)
+        put(t); // curated metadata wins
+    // if (network === "BASE") {
+    //     for (const t of DYNAMIC_BASE_TOKEN_CACHE.values()) if (!tokenMap.has(t.address.toLowerCase())) put(t);
+    // }
     // Routing-graph tokens missing from every list (metadata from the mint cache / chain)
     const missing = [...indexed].filter((address) => !tokenMap.has(address));
     await Promise.all(missing.map(async (address) => {
@@ -655,10 +701,7 @@ const getMergedTokenList = async (provider, network) => {
         }
     }));
     const merged = [...tokenMap.values()];
-    // Only cache a complete list, so a failed CoinGecko load is retried instead of pinned for 5 minutes
-    if (!EXTERNAL_TOKEN_LISTS[network] || externalTokenListCache.has(network)) {
-        mergedTokenListCache.set(network, { tokens: merged, at: Date.now() });
-    }
+    mergedTokenListCache.set(network, { tokens: merged, at: Date.now() });
     return merged;
 };
 const allTokensService = async (provider, network, options = {}) => {
@@ -668,7 +711,7 @@ const allTokensService = async (provider, network, options = {}) => {
         tokens = tokens.filter((t) => t.symbol.toLowerCase().includes(q) || t.name.toLowerCase().includes(q) || t.address.toLowerCase().startsWith(q));
     }
     // With a query: exact symbol, then symbol prefix, then symbol substring, then name/address.
-    // Then curated first, then routable, then alphabetical.
+    // Then curated first, then deepest on-chain liquidity, then routable, then alphabetical.
     const relevance = (t) => {
         if (!q)
             return 0;
@@ -683,6 +726,7 @@ const allTokensService = async (provider, network, options = {}) => {
     };
     tokens.sort((a, b) => relevance(a) - relevance(b) ||
         Number(b.verified) - Number(a.verified) ||
+        (b.liquidityUsd ?? -1) - (a.liquidityUsd ?? -1) ||
         Number(b.indexed) - Number(a.indexed) ||
         a.symbol.localeCompare(b.symbol));
     const total = tokens.length;

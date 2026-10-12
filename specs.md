@@ -181,11 +181,12 @@ GET http://localhost:3735/base/tokens/search?q=miggles
 
 ### 3.3.1 Get All Tokens
 
-Returns every known token on the chain, for token pickers and token pages. On Base it merges:
-- the **CoinGecko Base token list** (about 2,800 tokens, with logos; cached 6 h on the server)
+Returns every token our DEXes can route on Base, for token pickers and token pages. Since Oct 12, 2026 the list comes from the aggregator's own **on-chain token index**, not third-party token lists:
+- tokens with a pool on one of our DEXes that pairs them with **WETH or USDC** and holds at least **$1,000** of liquidity (name, symbol and decimals are read from the token contract)
 - the curated default tokens
 - tokens already in the routing graph
-- tokens found earlier through search
+
+The index is built in the background from the DEX factories. After a fresh deploy it fills up over the first ~1–2 hours (Uniswap V2 alone has ~3M pairs to scan); until then the list is shorter. New tokens appear within ~5 minutes of their pool getting liquidity.
 
 - **Method:** `GET`
 - **Paths:** `/:chain/tokens` (e.g. `GET /base/tokens`), or `/tokens` (defaults to Base)
@@ -194,7 +195,7 @@ Returns every known token on the chain, for token pickers and token pages. On Ba
 | Param | Description |
 | :--- | :--- |
 | `q` (or `query`) | Filter by symbol, name, or address prefix. Exact symbol matches rank first, then symbol prefix, then substring, then name. |
-| `limit` | Page size. Omit to get every token (~2,850 entries, about 0.5 s once cached; the first call after a server start takes ~3–4 s). |
+| `limit` | Page size. Omit to get every token. |
 | `offset` | Page start, default `0`. |
 
 #### Response (`200 OK`):
@@ -206,14 +207,14 @@ Returns every known token on the chain, for token pickers and token pages. On Ba
       "symbol": "AERO",
       "name": "Aerodrome",
       "decimals": 18,
-      "logoURI": "https://assets.coingecko.com/coins/images/…",
+      "liquidityUsd": 41200000,
       "indexed": true,
       "verified": true,
       "network": "BASE"
     }
   ],
   "data": [ /* same as result */ ],
-  "total": 2849,
+  "total": 1234,
   "offset": 0,
   "limit": null,
   "network": "BASE"
@@ -222,15 +223,16 @@ Returns every known token on the chain, for token pickers and token pages. On Ba
 
 | Field | Meaning |
 | :--- | :--- |
+| `liquidityUsd` | On-chain liquidity (USD) of the token's WETH/USDC pools when it was indexed. `null` for curated or routing-graph tokens not in the index. |
 | `indexed` | The token is already in the routing graph, so quotes return in ~1–3 s. For other tokens the **first** quote discovers pools on-chain, which takes ~20 s or more (§3.4.2). |
 | `verified` | In the curated default list. Treat everything else like an imported token: show a "check the contract address" warning, as the import flow already does. |
-| `logoURI` | Optional. Missing for tokens that are only in the routing graph or found via search. |
+| `logoURI` | No longer provided. There is no on-chain source for logos; show a generated mark. |
 
-Order: relevance to `q` (when given), then `verified`, then `indexed`, then symbol A–Z. `address` is checksummed. `total` is the count after filtering by `q`, before pagination. The merged list is cached on the server for 5 minutes, and the CoinGecko list underneath it for 6 hours.
+Order: relevance to `q` (when given), then `verified`, then **deepest liquidity**, then `indexed`, then symbol A–Z. `address` is checksummed. `total` is the count after filtering by `q`, before pagination. The list is cached on the server for 5 minutes.
 
-### 3.3.2 Token Market Data & Trending (Explore page)
+### 3.3.2 Token Market Data & Top Tokens (Explore page)
 
-Market data comes from **GeckoTerminal** (CoinGecko's on-chain API) and is **cached on the aggregator for 5 minutes** per token. Every visitor shares those upstream calls, so call these freely; refetching sooner than 5 minutes returns the same data.
+Market data is computed **on-chain** from each token's deepest WETH/USDC pool (no third-party APIs) and **cached on the aggregator for 5 minutes** per token. Every visitor shares that cache; refetching sooner returns the same data.
 
 **`GET /:chain/tokens/market?addresses=0xabc,0xdef,…`** (max **100** addresses; use WETH's address for native ETH)
 ```json
@@ -238,25 +240,27 @@ Market data comes from **GeckoTerminal** (CoinGecko's on-chain API) and is **cac
   "result": {
     "0x940181a94a35a4569e4529a3cdfb74e38fd98631": {
       "address": "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
-      "symbol": "AERO", "name": "Aerodrome Finance", "decimals": 18,
-      "logoURI": "https://assets.coingecko.com/…",
-      "priceUsd": 0.7968, "priceChange24h": -3.18,
-      "volume24hUsd": 23516650, "marketCapUsd": 796253553, "fdvUsd": 1203000000, "liquidityUsd": 41200000,
+      "symbol": "AERO", "name": "Aerodrome", "decimals": 18,
+      "logoURI": null,
+      "priceUsd": 0.7968, "priceChange24h": null,
+      "volume24hUsd": null, "marketCapUsd": 1589000000, "fdvUsd": null, "liquidityUsd": 41200000,
       "updatedAt": 1791580000000
     },
     "0x0000000000000000000000000000000000000001": null
   },
-  "cacheSeconds": 300
+  "cacheSeconds": 300,
+  "sources": { "onchain": "ok" }
 }
 ```
-- Keys are **lowercased** addresses. `null` means GeckoTerminal has no data for that token. Any numeric field can be `null`.
-- `priceChange24h` is a percent (`-3.18` = −3.18%), taken from the token's most liquid pool.
-- If GeckoTerminal is down or blocks the server, **DexScreener** is used as a fallback; if both fail, the last cached values are served.
-- Responses include `sources: { "geckoterminal": "ok" | "<error>", "dexscreener": "ok" | "<error>" }`. If prices show as blank, check it first.
+- Keys are **lowercased** addresses. `null` means the token isn't in the on-chain index (no qualifying WETH/USDC pool yet).
+- `priceUsd`: from the deepest pool's state (reserve ratio, Aerodrome stable `getAmountOut`, or V3 `slot0`) × the hub's on-chain USD price.
+- `marketCapUsd` = total supply × price. `liquidityUsd` ≈ 2 × the WETH/USDC side of the token's pools.
+- **Always `null` for now:** `priceChange24h`, `volume24hUsd`, `fdvUsd`, `logoURI`. These need price history or swap-event indexing, which may come later. Render them as "—" or hide them; showing liquidity in place of volume works well.
+- `sources.onchain` is `"ok"` or the last error; check it if prices go blank.
 
-**`GET /:chain/tokens/trending`**: tokens from Base's trending pools (about 18–20), same fields plus `poolName` and `dex`, cached 5 minutes.
+**`GET /:chain/tokens/trending`**: the **top 20 tokens by on-chain liquidity** (label it "Top", not "Trending"). Same fields plus `poolName` (e.g. `"AERO / WETH"`) and `dex` (the dexId of its deepest pool). Cached 5 minutes. Empty while the index is still building after a fresh deploy.
 
-**Explore page pattern (implemented in `deserialise-frontend`):** load `GET /base/tokens` once, filter it client-side, render 50 rows at a time, and request `/tokens/market` once per 50 visible rows (React Query `staleTime: 5 min`). A "Trending" tab reads `/tokens/trending`.
+**Explore page pattern (implemented in `deserialise-frontend`):** load `GET /base/tokens` once, filter it client-side, render 50 rows at a time, and request `/tokens/market` once per 50 visible rows (React Query `staleTime: 5 min`). Rows show market cap and liquidity. A "Top" tab reads `/tokens/trending`.
 
 ---
 

@@ -264,16 +264,8 @@ export const trendingTokensController = async (
             (typeof req.params.chain === "string" ? req.params.chain : undefined) ||
             (typeof req.query.chain === "string" ? req.query.chain : undefined)
         );
-        const provider = providerForChain(chainName);
-        // If GeckoTerminal is unavailable, rank curated + routable tokens by 24h volume instead
-        const fallback = async () => {
-            const { tokens } = await allTokensService(provider, chainName);
-            return tokens
-                .filter((t) => (t.verified || t.indexed) && !t.address.toLowerCase().startsWith("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"))
-                .map((t) => t.address)
-                .slice(0, MAX_ADDRESSES_PER_REQUEST);
-        };
-        const result = await getTrendingTokens(chainName, fallback);
+        // Top tokens by on-chain liquidity from the token registry
+        const result = await getTrendingTokens(chainName);
         res.send({ result, data: result, total: result.length, network: chainName, cacheSeconds: MARKET_TTL_MS / 1000, sources: getUpstreamStatus() });
     } catch (error: any) {
         console.error("❌ [TOKEN_TRENDING:ERROR]:", error?.message);

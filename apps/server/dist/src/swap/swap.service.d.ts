@@ -74,6 +74,8 @@ export interface TokenListItem {
     indexed: boolean;
     /** In the curated default token list */
     verified: boolean;
+    /** On-chain liquidity (USD) of the token's WETH/USDC pools at index time; null if not in the registry */
+    liquidityUsd?: number | null;
     network: NetworkType;
 }
 export declare const allTokensService: (provider: JsonRpcProvider, network: NetworkType, options?: {

@@ -7,6 +7,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const app_1 = require("./app");
 const routers_1 = __importDefault(require("./routers"));
 const config_1 = require("./config");
+const registry_1 = require("./tokens/registry");
+const routes_providers_1 = require("@deserialize-evm-agg/routes-providers");
 (async () => {
     // Rate limiting configuration
     console.log('Rate: ');
@@ -16,6 +18,8 @@ const config_1 = require("./config");
     const server = app.listen(PORT, () => {
         console.log(`Server is running on http://localhost:${PORT}`);
         console.log(`Rate limiting enabled: 200 requests per second per IP`);
+        // Background on-chain token registry (Base). TOKEN_INDEXER=off disables it.
+        (0, registry_1.startTokenIndexer)(routes_providers_1.BaseChain.rpcUrl);
     });
     // getNativePrice();
     let isShuttingDown = false;
