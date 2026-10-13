@@ -28,7 +28,7 @@ import { BaseChain } from "@deserialize-evm-agg/routes-providers";
         console.log(`Server is running on http://localhost:${PORT}`);
         console.log(`Rate limiting enabled: 200 requests per second per IP`);
         // Background on-chain token registry (Base). TOKEN_INDEXER=off disables it.
-        startTokenIndexer(BaseChain.rpcUrl);
+        startTokenIndexer(BaseChain.rpcUrl, server);
     });
 
     // getNativePrice();

@@ -172,17 +172,142 @@ async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 5): 
 
 type Call = { target: string; data: string };
 
-/** Batched eth_calls through Multicall3. Failed sub-calls return null. */
-async function multicall(provider: JsonRpcProvider, calls: Call[]): Promise<(string | null)[]> {
+// ---- request priority
+// The indexer shares one Node thread with the API. While HTTP requests are in flight it holds off
+// starting new RPC batches (up to MAX_DEFER_MS, so it can't be starved forever).
+
+let activeRequests = 0;
+const MAX_DEFER_MS = 30_000;
+
+/** Counts in-flight HTTP requests on the server so the indexer can give them priority */
+function trackRequests(server: { on(event: "request", listener: (req: unknown, res: { once(event: "close", cb: () => void): unknown }) => void): unknown }) {
+    server.on("request", (_req, res) => {
+        activeRequests += 1;
+        res.once("close", () => {
+            activeRequests -= 1;
+        });
+    });
+}
+
+async function yieldToRequests() {
+    const start = Date.now();
+    while (activeRequests > 0 && Date.now() - start < MAX_DEFER_MS) await sleep(100);
+    await new Promise((resolve) => setImmediate(resolve));
+}
+
+// ---- Multicall3 codec
+// ethers' generic ABI coder needs ~4.6s of blocking CPU to decode one 1,000-call aggregate3 response
+// (benchmarked), which froze every API request during indexing. aggregate3's layout is fixed, so it
+// is encoded and decoded here directly (~ms). Checked against ethers in docs.md §14.
+
+const AGGREGATE3 = multicallIface.getFunction("aggregate3")!.selector.slice(2);
+const word = (n: number) => n.toString(16).padStart(64, "0");
+const readWord = (hex: string, byteOffset: number) => parseInt(hex.slice(byteOffset * 2, byteOffset * 2 + 64), 16);
+
+/** aggregate3((address target, bool allowFailure = true, bytes callData)[]) calldata */
+function encodeAggregate3(calls: Call[]): string {
+    const heads: string[] = [];
+    const tails: string[] = [];
+    let offset = calls.length * 32; // tuple offsets are relative to the start of the head section
+    for (const c of calls) {
+        heads.push(word(offset));
+        const data = c.data.slice(2);
+        const length = data.length / 2;
+        const tuple = c.target.slice(2).toLowerCase().padStart(64, "0") + word(1) + word(0x60) + word(length) + data.padEnd(Math.ceil(length / 32) * 64, "0");
+        tails.push(tuple);
+        offset += tuple.length / 2;
+    }
+    return "0x" + AGGREGATE3 + word(0x20) + word(calls.length) + heads.join("") + tails.join("");
+}
+
+/** aggregate3 return data → returnData per call, null when the call failed or returned nothing */
+function decodeAggregate3(raw: string): (string | null)[] {
+    const hex = raw.slice(2);
+    const arrayStart = readWord(hex, 0);
+    const count = readWord(hex, arrayStart);
+    const heads = arrayStart + 32;
     const out: (string | null)[] = [];
-    for (let i = 0; i < calls.length; i += MULTICALL_CHUNK) {
-        const chunk = calls.slice(i, i + MULTICALL_CHUNK);
-        const data = multicallIface.encodeFunctionData("aggregate3", [chunk.map((c) => ({ target: c.target, allowFailure: true, callData: c.data }))]);
-        const raw = await withRetry("multicall", () => provider.call({ to: MULTICALL3, data }));
-        const [results] = multicallIface.decodeFunctionResult("aggregate3", raw);
-        for (const r of results) out.push(r.success && r.returnData !== "0x" ? r.returnData : null);
+    for (let i = 0; i < count; i += 1) {
+        const tuple = heads + readWord(hex, heads + i * 32);
+        const success = readWord(hex, tuple) !== 0;
+        const bytes = tuple + readWord(hex, tuple + 32);
+        const length = readWord(hex, bytes);
+        out.push(success && length > 0 ? "0x" + hex.slice((bytes + 32) * 2, (bytes + 32 + length) * 2) : null);
     }
     return out;
+}
+
+/**
+ * eth_call over native fetch. ethers' transport converts each ~70KB multicall payload between hex,
+ * bytes and UTF-8 in JS loops (profiled: most of the indexer's remaining CPU); fetch does it natively.
+ */
+async function ethCall(provider: JsonRpcProvider, to: string, data: string): Promise<string> {
+    const response = await fetch(provider._getConnection().url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to, data }, "latest"] }),
+        signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
+    const body: any = await response.json();
+    if (body.error) throw new Error(`RPC error ${body.error.code}: ${body.error.message}`);
+    if (typeof body.result !== "string") throw new Error("RPC returned no result");
+    return body.result;
+}
+
+/**
+ * Batched eth_calls through Multicall3. Failed sub-calls return null. `background` (indexer work)
+ * defers each batch while API requests are in flight; request handlers must leave it off, or they
+ * would wait on themselves.
+ */
+async function multicall(provider: JsonRpcProvider, calls: Call[], background = false): Promise<(string | null)[]> {
+    const out: (string | null)[] = [];
+    for (let i = 0; i < calls.length; i += MULTICALL_CHUNK) {
+        if (background) await yieldToRequests();
+        const chunk = calls.slice(i, i + MULTICALL_CHUNK);
+        const data = encodeAggregate3(chunk);
+        const results = await withRetry("multicall", async () => {
+            const decoded = decodeAggregate3(await ethCall(provider, MULTICALL3, data));
+            if (decoded.length !== chunk.length) throw new Error(`malformed multicall response (${decoded.length}/${chunk.length} results)`);
+            return decoded;
+        });
+        for (const r of results) out.push(r);
+    }
+    return out;
+}
+
+/** Indexer batches: yield to API requests first */
+const backgroundMulticall = (provider: JsonRpcProvider, calls: Call[]) => multicall(provider, calls, true);
+
+// ---- fast calldata / return-data helpers for the per-pool hot paths (ethers' coder is too slow
+// at 1,000s of calls per batch)
+
+const selector = (iface: Interface, fn: string) => iface.getFunction(fn)!.selector;
+const SEL = {
+    allPairs: selector(factoryIface, "allPairs"),
+    allPools: selector(factoryIface, "allPools"),
+    getPool: selector(factoryIface, "getPool"),
+    token0: selector(poolIface, "token0"),
+    token1: selector(poolIface, "token1"),
+    stable: selector(poolIface, "stable"),
+    positions: selector(npmIface, "positions"),
+    balanceOf: selector(erc20Iface, "balanceOf"),
+};
+const uintArg = (n: number | bigint) => n.toString(16).padStart(64, "0");
+const addressArg = (a: string) => a.slice(2).toLowerCase().padStart(64, "0");
+
+/** The address in return word `index`, lowercase; null when missing or not a clean address */
+function wordAddress(data: string | null, index = 0): string | null {
+    if (!data || data.length < 2 + (index + 1) * 64) return null;
+    const w = data.slice(2 + index * 64, 2 + (index + 1) * 64);
+    if (!/^0{24}[0-9a-fA-F]{40}$/.test(w)) return null;
+    return "0x" + w.slice(24).toLowerCase();
+}
+
+/** The uint in return word `index`; null when missing */
+function wordUint(data: string | null, index = 0): bigint | null {
+    if (!data || data.length < 2 + (index + 1) * 64) return null;
+    return BigInt("0x" + data.slice(2 + index * 64, 2 + (index + 1) * 64));
 }
 
 const decode = <T>(iface: Interface, fn: string, data: string | null): T | null => {
@@ -301,12 +426,12 @@ async function evaluateCandidates(
         if (isHub(c.token0)) checks.push({ c, hub: lower(c.token0), token: lower(c.token1) });
         if (isHub(c.token1)) checks.push({ c, hub: lower(c.token1), token: lower(c.token0) });
     }
-    const balances = await multicall(provider, checks.map((k) => ({ target: k.hub, data: erc20Iface.encodeFunctionData("balanceOf", [k.c.pool]) })));
+    const balances = await backgroundMulticall(provider, checks.map((k) => ({ target: k.hub, data: SEL.balanceOf + addressArg(k.c.pool) })));
 
     const byToken = new Map<string, RegistryPool[]>();
     const pending: PendingPool[] = [];
     checks.forEach((k, i) => {
-        const raw = decode<bigint>(erc20Iface, "balanceOf", balances[i]);
+        const raw = wordUint(balances[i]);
         const hubSideUsd = toUnits(raw, HUBS[k.hub].decimals) * (hubUsd[k.hub] ?? 0);
         if (hubSideUsd >= MIN_HUB_SIDE_USD) {
             const list = byToken.get(k.token) ?? [];
@@ -343,7 +468,7 @@ async function upsertTokens(provider: JsonRpcProvider, client: RedisClientType, 
             calls.push({ target: a, data: erc20Iface.encodeFunctionData("decimals") });
             calls.push({ target: a, data: erc20Iface.encodeFunctionData("totalSupply") });
         }
-        const results = await multicall(provider, calls);
+        const results = await backgroundMulticall(provider, calls);
         fresh.forEach((a, i) => {
             const symbol = decodeText("symbol", results[i * 4 + 1]);
             const decimals = decode<bigint>(erc20Iface, "decimals", results[i * 4 + 2]);
@@ -390,7 +515,7 @@ async function upsertTokens(provider: JsonRpcProvider, client: RedisClientType, 
 
 async function indexEnumSource(provider: JsonRpcProvider, client: RedisClientType, source: EnumSource, hubUsd: Record<string, number>) {
     const factory = { target: source.factory };
-    const [lenRaw] = await multicall(provider, [{ ...factory, data: factoryIface.encodeFunctionData(source.lengthFn) }]);
+    const [lenRaw] = await backgroundMulticall(provider, [{ ...factory, data: factoryIface.encodeFunctionData(source.lengthFn) }]);
     const length = Number(decode<bigint>(factoryIface, source.lengthFn, lenRaw) ?? 0n);
     let cursor = Number((await client.get(KEY.cursor(source.dexId))) ?? 0);
     if (cursor >= length) return;
@@ -399,24 +524,24 @@ async function indexEnumSource(provider: JsonRpcProvider, client: RedisClientTyp
     /** Enumerates pools [start, end) and evaluates the hub-paired ones */
     const processRange = async (start: number, end: number): Promise<number> => {
         const indexes = Array.from({ length: end - start }, (_, i) => start + i);
-        const poolResults = await multicall(provider, indexes.map((i) => ({ ...factory, data: factoryIface.encodeFunctionData(source.itemFn, [i]) })));
-        const pools = poolResults.map((r) => decode<string>(factoryIface, source.itemFn, r)).filter((p): p is string => !!p);
+        const poolResults = await backgroundMulticall(provider, indexes.map((i) => ({ ...factory, data: SEL[source.itemFn as "allPairs" | "allPools"] + uintArg(i) })));
+        const pools = poolResults.map((r) => wordAddress(r)).filter((p): p is string => !!p);
 
         const tokenCalls: Call[] = [];
         for (const p of pools) {
-            tokenCalls.push({ target: p, data: poolIface.encodeFunctionData("token0") });
-            tokenCalls.push({ target: p, data: poolIface.encodeFunctionData("token1") });
-            if (source.kind === "aero") tokenCalls.push({ target: p, data: poolIface.encodeFunctionData("stable") });
+            tokenCalls.push({ target: p, data: SEL.token0 });
+            tokenCalls.push({ target: p, data: SEL.token1 });
+            if (source.kind === "aero") tokenCalls.push({ target: p, data: SEL.stable });
         }
         const per = source.kind === "aero" ? 3 : 2;
-        const tokenResults = await multicall(provider, tokenCalls);
+        const tokenResults = await backgroundMulticall(provider, tokenCalls);
         const candidates: Candidate[] = [];
         pools.forEach((pool, i) => {
-            const token0 = decode<string>(poolIface, "token0", tokenResults[i * per]);
-            const token1 = decode<string>(poolIface, "token1", tokenResults[i * per + 1]);
+            const token0 = wordAddress(tokenResults[i * per]);
+            const token1 = wordAddress(tokenResults[i * per + 1]);
             if (!token0 || !token1 || !(isHub(token0) || isHub(token1))) return;
             let kind: PoolKind = source.kind === "cl" ? "cl" : "v2";
-            if (source.kind === "aero") kind = decode<boolean>(poolIface, "stable", tokenResults[i * per + 2]) ? "aeroStable" : "aeroVolatile";
+            if (source.kind === "aero") kind = wordUint(tokenResults[i * per + 2]) === 1n ? "aeroStable" : "aeroVolatile";
             candidates.push({ pool, dexId: source.dexId, kind, token0, token1 });
         });
         // Only recently created pools are worth re-checking later; old empty ones are dead
@@ -504,10 +629,10 @@ async function indexLogSource(provider: JsonRpcProvider, logs: JsonRpcProvider, 
  */
 async function indexNpmSource(provider: JsonRpcProvider, client: RedisClientType, source: NpmSource, hubUsd: Record<string, number>) {
     const npm = { target: source.npm };
-    const [supplyRaw] = await multicall(provider, [{ ...npm, data: npmIface.encodeFunctionData("totalSupply") }]);
+    const [supplyRaw] = await backgroundMulticall(provider, [{ ...npm, data: npmIface.encodeFunctionData("totalSupply") }]);
     const supply = decode<bigint>(npmIface, "totalSupply", supplyRaw) ?? 0n;
     if (supply === 0n) return;
-    const [lastRaw] = await multicall(provider, [{ ...npm, data: npmIface.encodeFunctionData("tokenByIndex", [supply - 1n]) }]);
+    const [lastRaw] = await backgroundMulticall(provider, [{ ...npm, data: npmIface.encodeFunctionData("tokenByIndex", [supply - 1n]) }]);
     const length = Number(decode<bigint>(npmIface, "tokenByIndex", lastRaw) ?? 0n) + 1; // highest live id + 1
     const cursorKey = KEY.cursor(`${source.dexId}:npm`);
     const seenKey = `tokenreg:${NETWORK}:seenpools:${source.dexId}`;
@@ -517,19 +642,15 @@ async function indexNpmSource(provider: JsonRpcProvider, client: RedisClientType
 
     const processRange = async (start: number, end: number): Promise<number> => {
         const ids = Array.from({ length: end - start }, (_, i) => start + i);
-        const results = await multicall(provider, ids.map((id) => ({ ...npm, data: npmIface.encodeFunctionData("positions", [id]) })));
+        const results = await backgroundMulticall(provider, ids.map((id) => ({ ...npm, data: SEL.positions + uintArg(id) })));
         // Unique hub-paired (token0, token1, fee) combinations in this range
         const keys = new Map<string, { token0: string; token1: string; fee: bigint }>();
         for (const raw of results) {
-            if (!raw) continue; // burned position
-            try {
-                const p = npmIface.decodeFunctionResult("positions", raw);
-                const token0 = lower(p.token0), token1 = lower(p.token1);
-                if (!(isHub(token0) || isHub(token1))) continue;
-                keys.set(`${token0}:${token1}:${p.fee}`, { token0, token1, fee: p.fee });
-            } catch {
-                // undecodable: skip
-            }
+            // positions() → (nonce, operator, token0, token1, fee, …); burned positions revert (null)
+            const token0 = wordAddress(raw, 2), token1 = wordAddress(raw, 3), fee = wordUint(raw, 4);
+            if (!token0 || !token1 || fee === null || fee >= 1n << 24n) continue;
+            if (!(isHub(token0) || isHub(token1))) continue;
+            keys.set(`${token0}:${token1}:${fee}`, { token0, token1, fee });
         }
         if (keys.size === 0) return 0;
         // Skip pools already evaluated
@@ -539,13 +660,13 @@ async function indexNpmSource(provider: JsonRpcProvider, client: RedisClientType
         const fresh = list.filter((_, i) => !seen[i]);
         if (fresh.length === 0) return 0;
         await client.hSet(seenKey, Object.fromEntries(fresh.map((k) => [k, "1"])));
-        const pools = await multicall(provider, fresh.map((k) => {
+        const pools = await backgroundMulticall(provider, fresh.map((k) => {
             const { token0, token1, fee } = keys.get(k)!;
-            return { target: source.factory, data: factoryIface.encodeFunctionData("getPool", [token0, token1, fee]) };
+            return { target: source.factory, data: SEL.getPool + addressArg(token0) + addressArg(token1) + uintArg(fee) };
         }));
         const candidates: Candidate[] = [];
         fresh.forEach((k, i) => {
-            const pool = decode<string>(factoryIface, "getPool", pools[i]);
+            const pool = wordAddress(pools[i]);
             if (!pool || pool === ethers.ZeroAddress) return;
             const { token0, token1 } = keys.get(k)!;
             candidates.push({ pool, dexId: source.dexId, kind: "cl", token0, token1 });
@@ -672,12 +793,14 @@ async function runCycle(provider: JsonRpcProvider, logs: JsonRpcProvider) {
 /**
  * Starts the background token indexer: one cycle now, then every 5 minutes. Disabled with
  * TOKEN_INDEXER=off. Safe to call in several processes (a Redis lock lets one index at a time).
+ * Pass the HTTP server so the indexer pauses while API requests are in flight.
  */
-export function startTokenIndexer(rpcUrl: string) {
+export function startTokenIndexer(rpcUrl: string, server?: Parameters<typeof trackRequests>[0]) {
     if (process.env.TOKEN_INDEXER === "off") {
         console.log("  [TOKEN_INDEX] disabled (TOKEN_INDEXER=off)");
         return;
     }
+    if (server) trackRequests(server);
     const provider = providerWithTimeout(rpcUrl);
     const logs = providerWithTimeout(LOGS_RPC_URL);
     console.log(`  [TOKEN_INDEX] starting (min liquidity $${MIN_LIQUIDITY_USD}, V3 pools via ${V3_VIA_LOGS ? `PoolCreated logs on ${LOGS_RPC_URL}` : "position managers"})`);

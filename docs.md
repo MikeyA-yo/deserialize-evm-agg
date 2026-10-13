@@ -466,7 +466,7 @@ Direction from the team: the backend must not list tokens or price them from Dex
 
 **Why no logs by default:** free RPCs cannot serve log history at any useful width. Measured on Oct 12: Alchemy free allows `eth_getLogs` over **10 blocks**; dRPC free advertises 10,000 but rejected even 500-block windows (only ~100 worked); mainnet.base.org was rate-limited; publicnode needs a token for history; 1rpc caps at 50 blocks; Blast and meowrpc refused. Scanning 51M blocks that way is infeasible, so V3 pools are found through the position managers, which only need `eth_call`. Sizes: Uniswap V2 **3,068,939 pairs**; PancakeSwap V2 32k; Aerodrome V2 30k; Slipstream 3.6k; V3 position ids ~5M (Uniswap) and ~1.6M+ (PancakeSwap).
 
-**Backfill time (one-time, resumable):** about 130–400 items/s per track on Alchemy free (1,000 per multicall, 4 batches in flight). The V2-style factories and the V3 position managers run as two parallel tracks, so a fresh deployment takes **about 9 hours** to cover everything. That is set by the V3 track: ~8.4M position ids at ~270/s measured. Uniswap V2 takes 2–6 hours on the other track. The smaller DEXes and the newest pools are covered within minutes, and the list grows as it goes.
+**Backfill time (one-time, resumable):** the V2-style factories and the V3 position managers run as two parallel tracks (1,000 calls per multicall, 4 batches in flight). The smaller DEXes and the newest pools are covered within minutes, and the list grows as it goes. Before the §14.4 fix the rate was ~130–400 items/s per track (about 9 hours in total). After it, Uniswap V2 measured **~900–1,300 pools/s** locally (≈ 40–60 min for 3.07M pairs). The V3 position tracks were already caught up locally, so their new rate was not measured, though the same per-item work was removed. On Render the CPU is smaller, so expect slower.
 
 **Listing rule:** a token is listed if at least one of its pools pairs it with a **hub** (WETH or USDC) and the hub side holds ≥ `TOKEN_INDEX_MIN_LIQUIDITY_USD / 2` (default $1,000 total, i.e. $500 hub side). Both sides of a WETH/USDC pool are listed. Hub USD prices are on-chain: USDC = $1, WETH from the Uniswap V3 WETH/USDC 0.05% pool's `slot0`.
 
@@ -507,3 +507,20 @@ Direction from the team: the backend must not list tokens or price them from Dex
 * DexScreener ticker search (`searchExternalBaseTokens`, `DYNAMIC_BASE_TOKEN_CACHE`, and step 4 of `tokenSearchService`).
 
 Still external, and not part of this change: `providers/routeProviders/price.ts` (DefiLlama and others) supplies USD prices used by the **router's** edge costs and `/tokenPrice`.
+
+### 14.4 Fix: the indexer blocked the API (Oct 13, 2026)
+**Symptom:** after the §14 deploy, prod answered every request slowly. `GET /` (a 404) took 20–40 s, `/tokens` timed out at 90 s, and quotes for any pair (even ETH→USDC) hit the frontend's 60 s timeout ("Finding liquidity for a newly added token…"), or Render returned 502.
+
+**Cause:** the indexer and the API share Node's single thread, and the indexer's multicalls used ethers' generic ABI coder and JSON-RPC transport, which are pure-JS and very slow at this size:
+* Decoding one 1,000-call `aggregate3` response took **4.6 s** of blocking CPU (encoding took 0.6 s). Up to 8 were in flight.
+* ethers' provider then converts each ~70 KB payload between hex, bytes and UTF-8 in JS loops (`_getBytes`, `hexlify`, `toUtf8String`). After the codec fix, the CPU profile showed these as most of the remaining CPU.
+
+Reproduced locally while backfilling Uniswap V2: a 5 ms handler took a median of **3.55 s**, worst 9.3 s. Render's CPU is several times smaller.
+
+**Fix (`registry.ts` only):**
+1. `encodeAggregate3` / `decodeAggregate3`: aggregate3's fixed layout is encoded and decoded by hand (1,000 calls: **10.6 ms** to decode, 18 ms to encode). Checked byte for byte against ethers on 100 random batches (varying lengths, failed and empty results). A response with the wrong number of results is rejected and retried.
+2. Hot per-item calls (`allPairs`, `allPools`, `token0/1`, `stable`, `positions`, `getPool`, `balanceOf`) use precomputed selectors and word slicing instead of ethers' coder.
+3. `ethCall` sends the multicall over native `fetch` instead of the ethers provider.
+4. Indexer batches (`backgroundMulticall`) wait while API requests are in flight (counted on the HTTP server, up to 30 s per batch). Request handlers (market data) call `multicall` directly so they never wait on themselves.
+
+**Result (local, during a Uniswap V2 backfill):** `GET /` median **19 ms**, p99 66–154 ms. ETH→USDC quote 1.5–2.3 s with the correct output. `/tokens/trending` uncached 0.9 s. The indexer is also ~10× faster.
